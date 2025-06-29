@@ -1,0 +1,57 @@
+name: helpify
+description: An AI-powered task marketplace for Sri Lanka.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Flutter Localizations for multi-language support
+  flutter_localizations:
+    sdk: flutter
+
+  # --- Firebase & Core Packages ---
+  firebase_core: ^2.32.0
+  firebase_auth: ^4.19.0
+  cloud_firestore: ^4.17.5
+  firebase_storage: ^11.7.7
+  firebase_messaging: ^14.9.4
+
+  # --- AI & Services ---
+  google_generative_ai: ^0.4.3
+  flutter_dotenv: ^5.1.0
+
+  # --- UI & Theming ---
+  google_fonts: ^6.2.1
+  cupertino_icons: ^1.0.6
+  intl: ^0.20.2
+  percent_indicator: ^4.2.3
+
+  # --- Device & Location ---
+  google_maps_flutter: ^2.7.0
+  geolocator: ^12.0.0
+  geocoding: ^4.0.0
+  image_picker: ^1.1.2
+
+  # --- Utilities & State Management ---
+  url_launcher: ^6.3.1
+  flutter_local_notifications: ^19.3.0
+  provider: ^6.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  generate: true
+  uses-material-design: true
+
+  # This section now explicitly includes the .env file and assets folder.
+  assets:
+    - assets/
+    - .env

@@ -1,0 +1,427 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:helpify/services/ai_service.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'map_picker_screen.dart';
+
+enum TaskType { physical, online }
+
+class PostTaskScreen extends StatefulWidget {
+  const PostTaskScreen({Key? key}) : super(key: key);
+
+  @override
+  State<PostTaskScreen> createState() => _PostTaskScreenState();
+}
+
+class _PostTaskScreenState extends State<PostTaskScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _titleController = TextEditingController();
+  final _descriptionController = TextEditingController();
+  final _budgetController = TextEditingController();
+  bool _isGeneratingDesc = false;
+
+  TaskType _selectedTaskType = TaskType.physical;
+  String? _selectedCategory;
+  String? _selectedSubCategory;
+
+  XFile? _imageFile;
+  String? _imageUrl;
+  GeoPoint? _selectedLocation;
+  String _locationAddress = 'No location selected';
+
+  bool _isSubmitting = false;
+  bool _isFetchingLocation = false;
+  bool _isUploadingImage = false;
+
+  final Map<String, List<String>> _categories = {
+    'Home & Garden': ['Plumbing', 'Handyman', 'Gardening', 'Cleaning', 'Moving', 'Appliance Repair'],
+    'Digital & Online': ['Graphic & Design', 'Writing & Translation', 'Digital Marketing', 'Tech & Programming', 'Data Entry'],
+    'Education': ['Math Tutoring', 'Science Tutoring', 'Language Lessons', 'Music Lessons'],
+    'Other': ['Delivery', 'Events & Photography', 'Vehicle Repair', 'Other'],
+  };
+  List<String> _subCategories = [];
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _descriptionController.dispose();
+    _budgetController.dispose();
+    super.dispose();
+  }
+
+  // --- AI Description Generator ---
+  Future<void> _generateDescription() async {
+    if (_titleController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please enter a title first.")));
+      return;
+    }
+    setState(() => _isGeneratingDesc = true);
+    final suggestion = await AiService.generateTaskDescription(_titleController.text.trim());
+    if (suggestion != null && mounted) {
+      setState(() {
+        _descriptionController.text = suggestion;
+      });
+    }
+    setState(() => _isGeneratingDesc = false);
+  }
+
+  // --- Main Submission Logic ---
+  Future<void> _submitTask() async {
+    if (!_formKey.currentState!.validate()) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all required fields.')));
+      return;
+    }
+    if (_selectedTaskType == TaskType.physical && _selectedLocation == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a location for a physical task.')));
+      return;
+    }
+
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      if (_imageFile != null) {
+        setState(() => _isUploadingImage = true);
+        final fileName = '${user.uid}-${DateTime.now().millisecondsSinceEpoch}.jpg';
+        final ref = FirebaseStorage.instance.ref().child('task_images').child(fileName);
+        await ref.putFile(File(_imageFile!.path));
+        _imageUrl = await ref.getDownloadURL();
+        setState(() => _isUploadingImage = false);
+      }
+
+      final budget = double.tryParse(_budgetController.text) ?? 0.0;
+
+      final taskData = {
+        'taskType': _selectedTaskType.name,
+        'title': _titleController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'category': _selectedCategory,
+        'subCategory': _selectedSubCategory,
+        'location': _selectedTaskType == TaskType.physical ? _selectedLocation : null,
+        'locationAddress': _selectedTaskType == TaskType.physical ? _locationAddress : null,
+        'budget': budget,
+        'imageUrl': _imageUrl,
+        'paymentMethod': 'escrow',
+        'isCommissionFree': true,
+        'posterId': user.uid,
+        'posterName': user.displayName ?? 'Helpify User',
+        'posterAvatarUrl': user.photoURL ?? '',
+        'status': 'open',
+        'timestamp': FieldValue.serverTimestamp(),
+      };
+
+      await FirebaseFirestore.instance.collection('tasks').add(taskData);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Task posted successfully!'), backgroundColor: Colors.green),
+        );
+        Navigator.of(context).pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error posting task: ${e.toString()}'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  // --- Location Helper Methods ---
+  Future<void> _getCurrentLocation() async {
+    setState(() => _isFetchingLocation = true);
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) throw Exception('Location services are disabled.');
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) throw Exception('Location permissions are denied');
+      }
+      if (permission == LocationPermission.deniedForever) throw Exception('Location permissions are permanently denied.');
+
+      final position = await Geolocator.getCurrentPosition();
+      _updateLocation(LatLng(position.latitude, position.longitude));
+
+    } catch(e) {
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+    } finally {
+      if(mounted) setState(() => _isFetchingLocation = false);
+    }
+  }
+
+  Future<void> _selectOnMap() async {
+    final pickedLocation = await Navigator.of(context).push<LatLng>(
+      MaterialPageRoute(builder: (ctx) => const MapPickerScreen()),
+    );
+    if (pickedLocation == null) return;
+    _updateLocation(pickedLocation);
+  }
+
+  Future<void> _updateLocation(LatLng location) async {
+    setState(() {
+      _selectedLocation = GeoPoint(location.latitude, location.longitude);
+      _locationAddress = "Fetching address...";
+    });
+    try {
+      List<Placemark> placemarks = await placemarkFromCoordinates(location.latitude, location.longitude);
+      if (placemarks.isNotEmpty) {
+        final place = placemarks.first;
+        setState(() {
+          _locationAddress = "${place.name ?? ''}, ${place.subLocality ?? ''}, ${place.locality ?? ''}".replaceAll(RegExp(r'^, |, $'), '');
+        });
+      }
+    } catch (e) {
+      setState(() => _locationAddress = "Lat: ${location.latitude.toStringAsFixed(2)}, Lon: ${location.longitude.toStringAsFixed(2)}");
+    }
+  }
+
+  // --- UI Build Methods ---
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Post a New Task'),
+        actions: [
+          if(_isSubmitting)
+            const Padding(padding: EdgeInsets.all(16.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white)))
+          else
+            IconButton(icon: const Icon(Icons.check), onPressed: _submitTask, tooltip: 'Post Task')
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildSectionHeader('1. Choose Task Type'),
+              _buildTaskTypeSelector(),
+              const SizedBox(height: 24),
+              _buildSectionHeader('2. Describe your Task'),
+              TextFormField(
+                controller: _titleController,
+                decoration: const InputDecoration(labelText: 'Task Title'),
+                validator: (value) => value!.isEmpty ? 'Please enter a title' : null,
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _descriptionController,
+                decoration: InputDecoration(
+                    labelText: 'Description',
+                    suffixIcon: _isGeneratingDesc
+                        ? const Padding(padding: EdgeInsets.all(12.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)))
+                        : IconButton(
+                      icon: const Icon(Icons.auto_awesome),
+                      tooltip: 'Generate with AI',
+                      onPressed: _generateDescription,
+                    )
+                ),
+                maxLines: 5,
+                validator: (value) => value!.isEmpty ? 'Please enter a description' : null,
+              ),
+              if (_selectedTaskType == TaskType.physical) ...[
+                const SizedBox(height: 24),
+                _buildSectionHeader('3. Set Location'),
+                _buildLocationInput(),
+              ],
+              const SizedBox(height: 24),
+              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '4. Details' : '3. Details'),
+              _buildCategorySelectors(),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _budgetController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Your Budget (LKR)'),
+                validator: (value) => value!.isEmpty ? 'Please enter a budget' : null,
+              ),
+              const SizedBox(height: 24),
+              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '5. Add a Photo (Optional)' : '4. Add a Photo (Optional)'),
+              _buildImagePicker(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16.0, top: 8.0),
+      child: Text(
+        title,
+        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+      ),
+    );
+  }
+
+  Widget _buildTaskTypeSelector() {
+    return SegmentedButton<TaskType>(
+      style: SegmentedButton.styleFrom(
+        foregroundColor: Theme.of(context).textTheme.bodyLarge?.color,
+        selectedForegroundColor: Theme.of(context).colorScheme.onPrimary,
+        selectedBackgroundColor: Theme.of(context).colorScheme.primary,
+      ),
+      segments: const <ButtonSegment<TaskType>>[
+        ButtonSegment<TaskType>(
+          value: TaskType.physical,
+          label: Text('Physical'),
+          icon: Icon(Icons.location_on_outlined),
+        ),
+        ButtonSegment<TaskType>(
+          value: TaskType.online,
+          label: Text('Online'),
+          icon: Icon(Icons.language),
+        ),
+      ],
+      selected: <TaskType>{_selectedTaskType},
+      onSelectionChanged: (Set<TaskType> newSelection) {
+        setState(() {
+          _selectedTaskType = newSelection.first;
+          _selectedCategory = null;
+          _selectedSubCategory = null;
+          _subCategories = [];
+        });
+      },
+    );
+  }
+
+  Widget _buildCategorySelectors() {
+    final relevantCategories = _selectedTaskType == TaskType.online
+        ? _categories.keys.where((k) => k == 'Digital & Online' || k == 'Education' || k == 'Other').toList()
+        : _categories.keys.where((k) => k != 'Digital & Online').toList();
+
+    return Column(
+      children: [
+        DropdownButtonFormField<String>(
+          value: _selectedCategory,
+          decoration: const InputDecoration(labelText: 'Category'),
+          items: relevantCategories
+              .map((label) => DropdownMenuItem(child: Text(label), value: label))
+              .toList(),
+          onChanged: (value) {
+            setState(() {
+              _selectedCategory = value;
+              _selectedSubCategory = null;
+              _subCategories = _categories[value] ?? [];
+            });
+          },
+          validator: (value) => value == null ? 'Please select a category' : null,
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 300),
+          child: _subCategories.isNotEmpty
+              ? Padding(
+            padding: const EdgeInsets.only(top: 16.0),
+            child: DropdownButtonFormField<String>(
+              value: _selectedSubCategory,
+              decoration: const InputDecoration(labelText: 'Sub-Category'),
+              items: _subCategories
+                  .map((label) => DropdownMenuItem(child: Text(label), value: label))
+                  .toList(),
+              onChanged: (value) => setState(() => _selectedSubCategory = value),
+              validator: (value) => value == null ? 'Please select a sub-category' : null,
+            ),
+          )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildImagePicker() {
+    return Center(
+      child: Column(
+        children: [
+          Container(
+            height: 150,
+            width: double.infinity,
+            decoration: BoxDecoration(
+              border: Border.all(color: Colors.grey.shade300),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: _isUploadingImage
+                ? const Center(child: CircularProgressIndicator())
+                : _imageFile != null
+                ? ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.file(File(_imageFile!.path), fit: BoxFit.cover),
+            )
+                : const Center(child: Text('No image selected.')),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () async {
+              final picker = ImagePicker();
+              final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+              if (file != null) {
+                setState(() => _imageFile = file);
+              }
+            },
+            icon: const Icon(Icons.add_photo_alternate_outlined),
+            label: const Text('Select an Image'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLocationInput() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.location_on, color: Theme.of(context).primaryColor),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_locationAddress, style: const TextStyle(fontSize: 16))),
+                  ],
+                ),
+                if (_isFetchingLocation) const Padding(
+                  padding: EdgeInsets.only(top: 8.0),
+                  child: LinearProgressIndicator(),
+                ),
+              ],
+            )
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            TextButton.icon(
+              icon: const Icon(Icons.my_location),
+              label: const Text('Use Current'),
+              onPressed: _isFetchingLocation ? null : _getCurrentLocation,
+            ),
+            TextButton.icon(
+              icon: const Icon(Icons.map_outlined),
+              label: const Text('Set on Map'),
+              onPressed: _selectOnMap,
+            ),
+          ],
+        )
+      ],
+    );
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "657614790732",
+    "project_id": "helpify-flutter",
+    "storage_bucket": "helpify-flutter.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:657614790732:android:0531d3b6bfb965027614e9",
+        "android_client_info": {
+          "package_name": "com.example.new_helpify"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAZMCBdviYVlMzj9liXv0oJQolMiV4YkMc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
