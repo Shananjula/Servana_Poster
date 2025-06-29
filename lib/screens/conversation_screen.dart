@@ -1,9 +1,14 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../models/chat_message_model.dart'; // Using your existing chat message model
+import 'package:helpify/services/ai_service.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import '../models/chat_message_model.dart';
 
-/// A screen that displays a real-time conversation and allows sending messages.
 class ConversationScreen extends StatefulWidget {
   final String chatChannelId;
   final String otherUserName;
@@ -25,49 +30,102 @@ class _ConversationScreenState extends State<ConversationScreen> {
   final ScrollController _scrollController = ScrollController();
   final String _currentUserId = FirebaseAuth.instance.currentUser!.uid;
 
+  Map<String, dynamic>? _smartAction;
+  bool _isUploadingFile = false;
+  Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _messageController.addListener(_onTextChanged);
+  }
+
   @override
   void dispose() {
+    _debounce?.cancel();
+    _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  /// Sends a new message to the Firestore subcollection for this chat channel.
-  Future<void> _sendMessage() async {
+  void _onTextChanged() {
+    if (_debounce?.isActive ?? false) _debounce!.cancel();
+    _debounce = Timer(const Duration(milliseconds: 800), () {
+      if (!mounted) return;
+      if (_messageController.text.trim().length > 10) {
+        _checkForSmartActions();
+      } else if (_smartAction != null) {
+        setState(() => _smartAction = null);
+      }
+    });
+  }
+
+  Future<void> _checkForSmartActions() async {
+    final action = await AiService.getSmartChatAction(_messageController.text.trim());
+    if (mounted && action != null) {
+      setState(() => _smartAction = action);
+    }
+  }
+
+  Future<void> _sendMessage({String? imageUrl}) async {
     final messageText = _messageController.text.trim();
-    if (messageText.isEmpty) return;
+    if (messageText.isEmpty && imageUrl == null) return;
 
     final message = {
       'text': messageText,
       'senderId': _currentUserId,
       'timestamp': FieldValue.serverTimestamp(),
+      'type': imageUrl != null ? 'image' : 'text',
+      'imageUrl': imageUrl,
+      'isFlagged': false,
     };
 
-    // Reference to the 'messages' subcollection within the chat channel
-    final messagesRef = FirebaseFirestore.instance
-        .collection('chats')
-        .doc(widget.chatChannelId)
-        .collection('messages');
-
-    // Reference to the main chat channel document to update the 'lastMessage'
+    final messagesRef = FirebaseFirestore.instance.collection('chats').doc(widget.chatChannelId).collection('messages');
     final channelRef = FirebaseFirestore.instance.collection('chats').doc(widget.chatChannelId);
 
-    // Use a batch write to perform both operations atomically
     final batch = FirebaseFirestore.instance.batch();
-    batch.set(messagesRef.doc(), message); // Add new message
-    batch.update(channelRef, { // Update last message details
-      'lastMessage': messageText,
+    batch.set(messagesRef.doc(), message);
+    batch.update(channelRef, {
+      'lastMessage': imageUrl != null ? 'Photo' : messageText,
       'lastMessageTimestamp': FieldValue.serverTimestamp(),
       'lastMessageSenderId': _currentUserId,
     });
-
     await batch.commit();
 
     _messageController.clear();
-    _scrollToBottom();
+    if (mounted) setState(() => _smartAction = null);
   }
 
-  /// Scrolls to the bottom of the message list.
+  Future<void> _shareFile() async {
+    if (_isUploadingFile) return;
+    setState(() => _isUploadingFile = true);
+    final picker = ImagePicker();
+    final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+    if (file == null) {
+      if (mounted) setState(() => _isUploadingFile = false);
+      return;
+    }
+    try {
+      final fileName = '${_currentUserId}-${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref = FirebaseStorage.instance.ref('chat_attachments').child(fileName);
+      await ref.putFile(File(file.path));
+      final imageUrl = await ref.getDownloadURL();
+      _sendMessage(imageUrl: imageUrl);
+    } catch (e) {
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("File sharing failed.")));
+    } finally {
+      if (mounted) setState(() => _isUploadingFile = false);
+    }
+  }
+
+  void _executeSmartAction() {
+    if (_smartAction == null) return;
+    final actionType = _smartAction!['action'];
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Executing AI Action: $actionType")));
+    setState(() => _smartAction = null);
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -85,134 +143,74 @@ class _ConversationScreenState extends State<ConversationScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        leadingWidth: 40,
-        titleSpacing: 0,
+        elevation: 1,
         title: Row(
           children: [
-            if (widget.otherUserAvatarUrl != null && widget.otherUserAvatarUrl!.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(right: 12.0),
-                child: CircleAvatar(
-                  backgroundImage: NetworkImage(widget.otherUserAvatarUrl!),
-                  radius: 20,
-                ),
-              )
-            else
-              Padding(
-                padding: const EdgeInsets.only(right: 12.0),
-                child: CircleAvatar(
-                  backgroundColor: theme.colorScheme.primaryContainer,
-                  child: Icon(Icons.person, color: theme.colorScheme.onPrimaryContainer),
-                  radius: 20,
-                ),
-              ),
-            Expanded(
-              child: Text(
-                widget.otherUserName,
-                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w500),
-                overflow: TextOverflow.ellipsis,
-              ),
+            CircleAvatar(
+              backgroundImage: widget.otherUserAvatarUrl != null ? NetworkImage(widget.otherUserAvatarUrl!) : null,
+              child: widget.otherUserAvatarUrl == null ? const Icon(Icons.person) : null,
             ),
+            const SizedBox(width: 12),
+            Text(widget.otherUserName),
           ],
         ),
-        actions: [
-          IconButton(icon: const Icon(Icons.call_outlined), onPressed: () {/* TODO */}),
-          IconButton(icon: const Icon(Icons.more_vert), onPressed: () {/* TODO */}),
-        ],
       ),
       body: Column(
         children: [
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              // Listen to the 'messages' subcollection in real-time
-              stream: FirebaseFirestore.instance
-                  .collection('chats')
-                  .doc(widget.chatChannelId)
-                  .collection('messages')
-                  .orderBy('timestamp', descending: false)
-                  .snapshots(),
+              stream: FirebaseFirestore.instance.collection('chats').doc(widget.chatChannelId).collection('messages').orderBy('timestamp').snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(child: Text("No messages yet. Say hello!"));
+                  return const Center(child: Text("Say hello!"));
                 }
-                if (snapshot.hasError) {
-                  return const Center(child: Text("Could not load messages."));
-                }
-
-                final messages = snapshot.data!.docs
-                    .map((doc) => ChatMessage.fromFirestore(doc))
-                    .toList();
-
-                // Scroll to bottom after the list builds
                 _scrollToBottom();
-
                 return ListView.builder(
                   controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 16.0),
-                  itemCount: messages.length,
+                  padding: const EdgeInsets.all(12),
+                  itemCount: snapshot.data!.docs.length,
                   itemBuilder: (context, index) {
-                    final message = messages[index];
-                    final bool isSentByMe = message.senderId == _currentUserId;
-                    return _MessageBubble(message: message.text, isSentByMe: isSentByMe, timestamp: message.timestamp);
+                    final messageDoc = snapshot.data!.docs[index];
+                    final message = ChatMessage.fromFirestore(messageDoc);
+                    if(message.isFlagged == true) {
+                      return const SizedBox.shrink();
+                    }
+                    return _MessageBubble(message: message, isSentByMe: message.senderId == _currentUserId);
                   },
                 );
               },
             ),
           ),
+          if (_smartAction != null) _buildSmartActionButton(theme),
           _MessageInputField(
             controller: _messageController,
             onSend: _sendMessage,
+            onAttach: _shareFile,
+            isUploading: _isUploadingFile,
           ),
         ],
       ),
     );
   }
-}
 
-// --- UI Helper Widgets ---
+  Widget _buildSmartActionButton(ThemeData theme) {
+    IconData icon = Icons.lightbulb_outline;
+    String text = _smartAction!['details'] ?? "Smart Action";
+    if (_smartAction!['action'] == 'schedule') icon = Icons.calendar_today_outlined;
+    if (_smartAction!['action'] == 'request_location') icon = Icons.location_on_outlined;
 
-class _MessageBubble extends StatelessWidget {
-  final String message;
-  final bool isSentByMe;
-  final Timestamp? timestamp;
-
-  const _MessageBubble({
-    Key? key,
-    required this.message,
-    required this.isSentByMe,
-    this.timestamp
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final alignment = isSentByMe ? Alignment.centerRight : Alignment.centerLeft;
-    final bubbleColor = isSentByMe ? theme.colorScheme.primaryContainer : theme.colorScheme.secondaryContainer;
-    final textColor = isSentByMe ? theme.colorScheme.onPrimaryContainer : theme.colorScheme.onSecondaryContainer;
-    final borderRadius = BorderRadius.only(
-      topLeft: const Radius.circular(18),
-      topRight: const Radius.circular(18),
-      bottomLeft: Radius.circular(isSentByMe ? 18 : 4),
-      bottomRight: Radius.circular(isSentByMe ? 4 : 18),
-    );
-
-    return Align(
-      alignment: alignment,
-      child: Container(
-        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(
-          color: bubbleColor,
-          borderRadius: borderRadius,
-        ),
-        child: Text(
-          message,
-          style: theme.textTheme.bodyLarge?.copyWith(color: textColor),
-        ),
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      color: theme.primaryColor.withOpacity(0.1),
+      child: TextButton.icon(
+        style: TextButton.styleFrom(foregroundColor: theme.primaryColor, alignment: Alignment.centerLeft),
+        onPressed: _executeSmartAction,
+        icon: Icon(icon, size: 20),
+        label: Text(text, overflow: TextOverflow.ellipsis,),
       ),
     );
   }
@@ -220,63 +218,92 @@ class _MessageBubble extends StatelessWidget {
 
 class _MessageInputField extends StatelessWidget {
   final TextEditingController controller;
-  final VoidCallback onSend;
+  final Function({String? imageUrl}) onSend;
+  final VoidCallback? onAttach;
+  final bool isUploading;
 
-  const _MessageInputField({
-    Key? key,
-    required this.controller,
-    required this.onSend,
-  }) : super(key: key);
+  const _MessageInputField({required this.controller, required this.onSend, this.onAttach, this.isUploading = false});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Material(
-      elevation: 5.0,
-      color: theme.canvasColor,
+      elevation: 8,
+      color: theme.cardColor,
       child: Padding(
-        padding: EdgeInsets.only(
-          left: 12.0,
-          right: 8.0,
-          top: 8.0,
-          bottom: 8.0 + MediaQuery.of(context).padding.bottom,
-        ),
+        padding: EdgeInsets.only(left: 8, right: 8, top: 8, bottom: MediaQuery.of(context).padding.bottom + 8),
         child: Row(
           children: [
             IconButton(
-              icon: Icon(Icons.add, color: theme.colorScheme.onSurfaceVariant),
-              onPressed: () {},
-              tooltip: "Attach file",
+              icon: isUploading ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2,)) : const Icon(Icons.attach_file_outlined),
+              onPressed: onAttach,
+              tooltip: "Attach Image",
             ),
             Expanded(
               child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-                  borderRadius: BorderRadius.circular(24.0),
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(24)
                 ),
                 child: TextField(
                   controller: controller,
-                  decoration: const InputDecoration(
-                    hintText: 'Type a message...',
-                    border: InputBorder.none,
-                    contentPadding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                    isCollapsed: true,
-                  ),
+                  decoration: const InputDecoration(hintText: 'Type a message...', border: InputBorder.none),
                   textCapitalization: TextCapitalization.sentences,
+                  onSubmitted: (_) => onSend(),
                   minLines: 1,
                   maxLines: 5,
-                  onSubmitted: (_) => onSend(),
                 ),
               ),
             ),
-            const SizedBox(width: 4),
             IconButton(
-              icon: Icon(Icons.send_rounded, color: theme.colorScheme.primary),
-              onPressed: onSend,
-              tooltip: "Send message",
+              icon: Icon(Icons.send_rounded, color: theme.primaryColor),
+              onPressed: () => onSend(),
+              tooltip: "Send",
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _MessageBubble extends StatelessWidget {
+  final ChatMessage message;
+  final bool isSentByMe;
+
+  const _MessageBubble({required this.message, required this.isSentByMe});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isImage = message.type == 'image';
+    return Align(
+      alignment: isSentByMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+        padding: isImage ? const EdgeInsets.all(4) : const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+        decoration: BoxDecoration(
+          color: isSentByMe ? theme.primaryColor : Colors.grey[200],
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(20),
+            topRight: const Radius.circular(20),
+            bottomLeft: Radius.circular(isSentByMe ? 20 : 4),
+            bottomRight: Radius.circular(isSentByMe ? 4 : 20),
+          ),
+        ),
+        child: isImage
+            ? ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Image.network(
+            message.imageUrl!,
+            height: 200,
+            width: 200,
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, progress) => progress == null ? child : const SizedBox(height: 200, width: 200, child: Center(child: CircularProgressIndicator())),
+          ),
+        )
+            : Text(message.text, style: TextStyle(color: isSentByMe ? Colors.white : Colors.black87)),
       ),
     );
   }

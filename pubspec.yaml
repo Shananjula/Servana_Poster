@@ -10,16 +10,13 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Flutter Localizations for multi-language support
-  flutter_localizations:
-    sdk: flutter
-
   # --- Firebase & Core Packages ---
   firebase_core: ^2.32.0
   firebase_auth: ^4.19.0
   cloud_firestore: ^4.17.5
   firebase_storage: ^11.7.7
   firebase_messaging: ^14.9.4
+  firebase_app_check: ^0.2.2+1 # --- NEW ---
 
   # --- AI & Services ---
   google_generative_ai: ^0.4.3
@@ -28,7 +25,7 @@ dependencies:
   # --- UI & Theming ---
   google_fonts: ^6.2.1
   cupertino_icons: ^1.0.6
-  intl: ^0.20.2
+  intl: ^0.20.2 # Use the latest version compatible with your project
   percent_indicator: ^4.2.3
 
   # --- Device & Location ---
@@ -51,7 +48,7 @@ flutter:
   generate: true
   uses-material-design: true
 
-  # This section now explicitly includes the .env file and assets folder.
+  # --- UPDATED: Ensure logo.png is listed ---
   assets:
-    - assets/
+    - assets/Gemini_Generated_Image.png
     - .env
