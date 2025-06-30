@@ -1,7 +1,9 @@
+// lib/screens/profile_screen.dart
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:percent_indicator/percent_indicator.dart';
-import 'package:cloud_firestore/cloud_firestore.dart'; // <-- THIS IMPORT FIXES THE ERRORS
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:helpify/providers/user_provider.dart';
 import 'package:helpify/models/user_model.dart';
 import 'package:helpify/screens/edit_profile_screen.dart';
@@ -9,7 +11,9 @@ import 'package:helpify/screens/wallet_screen.dart';
 import 'package:helpify/screens/skill_quests_screen.dart';
 import 'package:helpify/screens/leaderboard_screen.dart';
 import 'package:helpify/screens/settings_screen.dart';
+import 'package:helpify/screens/verification_status_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
 
 class ProfileScreen extends StatelessWidget {
   final String? userId;
@@ -31,13 +35,16 @@ class ProfileScreen extends StatelessWidget {
         },
       );
     } else {
-      return FutureBuilder<DocumentSnapshot>(
+      return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
           future: FirebaseFirestore.instance.collection('users').doc(userId).get(),
           builder: (context, snapshot) {
-            if (!snapshot.hasData) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
               return const Scaffold(body: Center(child: CircularProgressIndicator()));
             }
-            final user = HelpifyUser.fromFirestore(snapshot.data! as DocumentSnapshot<Map<String, dynamic>>);
+            if (!snapshot.hasData || !snapshot.data!.exists) {
+              return Scaffold(appBar: AppBar(), body: const Center(child: Text("User not found.")));
+            }
+            final user = HelpifyUser.fromFirestore(snapshot.data!);
             return _buildProfileScaffold(context, user, false);
           }
       );
@@ -62,17 +69,26 @@ class ProfileScreen extends StatelessWidget {
       body: SingleChildScrollView(
         child: Column(
           children: [
-            _buildProfileHeader(context, user, isCurrentUserProfile),
+            _ProfileHeader(user: user, isCurrentUser: isCurrentUserProfile),
             const SizedBox(height: 16),
-            if (isCurrentUserProfile) _buildActionMenu(context),
-            _buildHelperSection(context, user),
+            if (user.isHelper == true) _HelperStats(user: user),
+            if (isCurrentUserProfile) _ActionMenu(),
+            if (user.isHelper == true) _HelperInfoSection(user: user),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildProfileHeader(BuildContext context, HelpifyUser user, bool isCurrentUserProfile) {
+class _ProfileHeader extends StatelessWidget {
+  final HelpifyUser user;
+  final bool isCurrentUser;
+
+  const _ProfileHeader({required this.user, required this.isCurrentUser});
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.all(24.0),
@@ -85,12 +101,20 @@ class ProfileScreen extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(user.displayName ?? "Helpify User", style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          if (isCurrentUserProfile)
-            Text(user.email ?? "No email provided", style: theme.textTheme.bodyLarge?.copyWith(color: Colors.grey[600])),
-
-          if (isCurrentUserProfile) ...[
-            const SizedBox(height: 24),
+          const SizedBox(height: 4),
+          if (isCurrentUser && user.email != null)
+            Text(user.email!, style: theme.textTheme.bodyLarge?.copyWith(color: Colors.grey[600])),
+          if(user.isHelper == true)
+            Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Chip(
+                avatar: Icon(Icons.verified_user, color: theme.colorScheme.primary, size: 18),
+                label: Text("Verified Helper", style: TextStyle(color: theme.colorScheme.primary, fontWeight: FontWeight.bold)),
+                backgroundColor: theme.colorScheme.primary.withOpacity(0.1),
+              ),
+            ),
+          const SizedBox(height: 24),
+          if (isCurrentUser) ...[
             LinearPercentIndicator(
               lineHeight: 18.0,
               percent: user.profileCompletion,
@@ -103,32 +127,111 @@ class ProfileScreen extends StatelessWidget {
               progressColor: theme.colorScheme.primary,
               animation: true,
             ),
-            TextButton(
-              child: const Text("Complete your profile"),
-              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen())),
-            )
+            if (user.profileCompletion < 1.0)
+              TextButton(
+                child: const Text("Complete your profile"),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen())),
+              )
           ]
         ],
       ),
     );
   }
+}
 
-  Widget _buildActionMenu(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+class _HelperStats extends StatelessWidget {
+  final HelpifyUser user;
+  const _HelperStats({required this.user});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _StatItem(
+                icon: Icons.star_rounded,
+                value: user.averageRating.toStringAsFixed(1),
+                label: "${user.ratingCount} Reviews",
+                color: Colors.amber,
+              ),
+              _StatItem(
+                icon: Icons.shield_rounded,
+                value: user.trustScore.toString(),
+                label: "Trust Score",
+                color: Colors.green,
+              ),
+              _StatItem(
+                icon: Icons.check_circle_rounded,
+                value: user.commissionFreeTasksCompleted.toString(),
+                label: "Tasks Done",
+                color: Theme.of(context).primaryColor,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatItem extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  final String label;
+  final Color color;
+  const _StatItem({required this.icon, required this.value, required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Icon(icon, color: color, size: 30),
+        const SizedBox(height: 4),
+        Text(value, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+      ],
+    );
+  }
+}
+
+class _ActionMenu extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildActionCard(context, "My Wallet", Icons.account_balance_wallet_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
-          _buildActionCard(context, "Edit Profile", Icons.edit_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen()))),
-          _buildActionCard(context, "Helpify Heroes", Icons.leaderboard_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaderboardScreen()))),
-          _buildActionCard(context, "Skill Quests", Icons.flag_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SkillQuestsScreen()))),
-          _buildActionCard(context, "App Settings", Icons.settings_outlined, () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+          Text("My Account", style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+          const Divider(height: 24),
+          _ActionCard(title: "My Wallet", icon: Icons.account_balance_wallet_outlined, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const WalletScreen()))),
+          _ActionCard(title: "Edit Profile", icon: Icons.edit_outlined, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditProfileScreen()))),
+          _ActionCard(
+            title: "My Verification",
+            icon: Icons.shield_outlined,
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const VerificationStatusScreen())),
+          ),
+          _ActionCard(title: "Skill Quests", icon: Icons.flag_outlined, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SkillQuestsScreen()))),
+          _ActionCard(title: "App Settings", icon: Icons.settings_outlined, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen()))),
         ],
       ),
     );
   }
+}
 
-  Widget _buildActionCard(BuildContext context, String title, IconData icon, VoidCallback onTap) {
+class _ActionCard extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+  const _ActionCard({required this.title, required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
@@ -139,27 +242,44 @@ class ProfileScreen extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _buildHelperSection(BuildContext context, HelpifyUser user) {
-    if (user.isHelper != true) return const SizedBox.shrink();
+class _HelperInfoSection extends StatelessWidget {
+  final HelpifyUser user;
+  const _HelperInfoSection({required this.user});
 
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.all(16.0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("My Helper Profile", style: Theme.of(context).textTheme.titleLarge),
-          const Divider(),
-          if(user.badges.isNotEmpty) ...[
-            const Text("My Badges:", style: TextStyle(fontWeight: FontWeight.bold)),
+          Text("Helper Information", style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+          const Divider(height: 24),
+          if(user.skills.isNotEmpty) ...[
+            const Text("My Skills", style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
             Wrap(
               spacing: 8.0,
+              runSpacing: 8.0,
+              children: user.skills.map((skill) => Chip(label: Text(skill))).toList(),
+            ),
+            const SizedBox(height: 16),
+          ],
+          if(user.badges.isNotEmpty) ...[
+            const Text("My Badges", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8.0,
+              // --- THIS IS THE CORRECTED LINE ---
               children: user.badges.map((badge) => Chip(
-                avatar: const Icon(Icons.verified_user, color: Colors.white, size: 18),
+                avatar: const Icon(Icons.verified, color: Colors.white, size: 18),
                 label: Text(badge, style: const TextStyle(color: Colors.white)),
-                backgroundColor: Theme.of(context).colorScheme.secondary,
-              )).toList(),
+                backgroundColor: theme.colorScheme.secondary,
+              )).toList(), // Added .toList() here
+              // --- END OF CORRECTION ---
             ),
           ] else
             const Text("Complete Skill Quests to earn cool badges!"),

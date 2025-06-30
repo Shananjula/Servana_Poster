@@ -68,7 +68,7 @@ exports.onTaskUpdateForActivity = functions.firestore
       return null;
     });
 
-// --- NEW: Cloud Function for "Task Radio" ---
+// --- Cloud Function for "Task Radio" ---
 exports.onUrgentTaskCreate = functions.firestore
     .document("tasks/{taskId}")
     .onCreate(async (snap, context) => {
@@ -146,3 +146,42 @@ exports.onUserCreateSetup = functions.auth.user().onCreate((user) => {
     trustScore: 10, // Starting trust score
   }, {merge: true});
 });
+
+// --- **NEW** Function to notify users about verification status changes ---
+exports.onVerificationUpdate = functions.firestore
+    .document("verification_requests/{requestId}")
+    .onUpdate(async (change, context) => {
+      const before = change.before.data();
+      const after = change.after.data();
+
+      // Ensure the status has actually changed to prevent accidental re-triggers
+      if (before.status === after.status) {
+        return null;
+      }
+
+      // Logic to send notification when the request is approved or rejected
+      if ((before.status === "pending_review" || before.status === "pending_upload") && (after.status === "approved" || after.status === "rejected")) {
+        const userId = after.userId;
+        let title = "Verification Update";
+        let body = "Your verification status has been updated.";
+        let type = "verification_update"; // A general type
+
+        if (after.status === "approved") {
+          title = "🎉 Verification Approved!";
+          body = "Congratulations! You are now a verified Helper on Helpify.";
+          type = "verification_approved";
+        } else if (after.status === "rejected") {
+          title = "Verification Update";
+          body = "There was an issue with your document. Please review and resubmit.";
+          type = "verification_rejected";
+        }
+
+        return sendAndSaveNotification(
+          userId,
+          title,
+          body,
+          { type: type, relatedId: userId }
+        );
+      }
+      return null;
+    });
