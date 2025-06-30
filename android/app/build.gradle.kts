@@ -25,6 +25,7 @@ android {
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
+
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -41,9 +42,13 @@ android {
         applicationId = "com.example.new_helpify"
         minSdk = 23
         // Also update targetSdk to match compileSdk
+
         targetSdk = 35
         versionCode = flutterVersionCode.toInt()
         versionName = flutterVersionName
+
+        // --- ADD THIS LINE TO ENABLE MULTIDEX ---
+        multiDexEnabled = true
     }
 
     buildTypes {
@@ -61,7 +66,8 @@ dependencies {
     // --- FIX 2: Updated desugaring library version as required by the error log ---
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
-    // Your existing Firebase dependencies
+
+// Your existing Firebase dependencies
     implementation(platform("com.google.firebase:firebase-bom:33.0.0"))
     implementation("com.google.firebase:firebase-analytics-ktx")
     implementation("com.google.firebase:firebase-auth-ktx")
