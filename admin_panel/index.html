@@ -6,7 +6,6 @@
     <title>Helpify Admin Panel</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .hidden-content { display: none; }
@@ -24,15 +23,22 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
 
-<div class="flex h-screen">
+<!-- Authentication Container -->
+<div id="auth-container" class="flex items-center justify-center h-screen">
+    <div class="w-full max-w-md p-8 space-y-6 bg-white rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold text-center text-gray-800">Helpify Admin Login</h2>
+        <div id="firebaseui-auth-container"></div>
+        <p id="auth-loader" class="text-center">Loading authentication...</p>
+    </div>
+</div>
+
+<!-- Main Application Container -->
+<div id="main-app" class="flex h-screen hidden-content">
     <!-- Sidebar Navigation -->
     <aside class="w-64 bg-white shadow-lg flex flex-col z-10">
         <div class="p-6 text-2xl font-bold text-teal-600 border-b">Helpify Admin</div>
@@ -41,271 +47,374 @@
             <a href="#" data-target="users" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197m0 0A10.004 10.004 0 003 15"></path></svg>Users</a>
             <a href="#" data-target="tasks" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>Tasks</a>
             <a href="#" data-target="verification" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>Verification Hub</a>
-            <a href="#" data-target="transactions" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>Transactions</a>
-            <a href="#" data-target="watch" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>Community Watch</a>
-            <a href="#" data-target="settings" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>Platform Settings</a>
         </nav>
+        <div class="p-4 border-t">
+            <button id="logout-btn" class="w-full flex items-center justify-center p-3 text-lg text-red-600 hover:bg-red-100 rounded-lg">
+                <svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                Logout
+            </button>
+        </div>
     </aside>
 
     <!-- Main Content Area -->
     <main class="flex-1 p-8 overflow-y-auto">
-
-        <!-- Main Dashboard Content -->
-        <div id="content-dashboard" class="content-panel">
-            <h1 class="text-4xl font-bold mb-4">Dashboard</h1>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div class="bg-white p-6 rounded-lg shadow flex items-center"><div class="p-3 rounded-full bg-teal-100 text-teal-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg></div><div><h3 class="text-gray-500 text-lg">Total Users</h3><p id="total-users-stat" class="text-3xl font-bold">...</p></div></div>
-                <div class="bg-white p-6 rounded-lg shadow flex items-center"><div class="p-3 rounded-full bg-sky-100 text-sky-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg></div><div><h3 class="text-gray-500 text-lg">Total Tasks</h3><p id="total-tasks-stat" class="text-3xl font-bold">...</p></div></div>
-                <div class="bg-white p-6 rounded-lg shadow flex items-center"><div class="p-3 rounded-full bg-emerald-100 text-emerald-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div><div><h3 class="text-gray-500 text-lg">Completed Tasks</h3><p id="completed-tasks-stat" class="text-3xl font-bold">...</p></div></div>
-                <div class="bg-white p-6 rounded-lg shadow flex items-center"><div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div><div><h3 class="text-gray-500 text-lg">Pending Verifications</h3><p id="pending-verifications-stat" class="text-3xl font-bold">...</p></div></div>
-            </div>
-            <h2 class="text-2xl font-bold mb-4">Analytics Overview</h2>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                <div class="bg-white p-6 rounded-lg shadow"><h3 class="font-semibold mb-2">User Signups (Last 7 Days)</h3><canvas id="user-signup-chart"></canvas></div>
-                <div class="bg-white p-6 rounded-lg shadow"><h3 class="font-semibold mb-2">Task Categories</h3><div class="max-h-64 flex justify-center items-center"><canvas id="task-category-chart"></canvas></div></div>
-            </div>
-        </div>
-
-        <div id="content-users" class="content-panel hidden-content">
-            <div class="flex justify-between items-center mb-4">
-                <h1 class="text-4xl font-bold">User Management</h1>
-                <input id="user-search-input" type="text" placeholder="Search by name or email..." class="w-1/3 px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500">
-            </div>
-            <div class="bg-white shadow rounded-lg overflow-x-auto">
-                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">User</th><th class="px-5 py-3">Email</th><th class="px-5 py-3">Joined</th><th class="px-5 py-3">Status</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="user-table-body"></tbody></table>
-            </div>
-        </div>
-
-        <div id="content-tasks" class="content-panel hidden-content">
-            <h1 class="text-4xl font-bold mb-8">Task Management</h1>
-            <div class="bg-white shadow rounded-lg overflow-hidden">
-                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">Task Title</th><th class="px-5 py-3">Posted By</th><th class="px-5 py-3">Budget (LKR)</th><th class="px-5 py-3">Status</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="task-table-body"></tbody></table>
-            </div>
-        </div>
-
-        <div id="content-verification" class="content-panel hidden-content">
-            <h1 class="text-4xl font-bold mb-8">Verification Hub</h1>
-            <div class="bg-white shadow rounded-lg overflow-hidden">
-                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">User</th><th class="px-5 py-3">Document Type</th><th class="px-5 py-3">Submitted At</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="verification-table-body"></tbody></table>
-            </div>
-        </div>
-
-        <div id="content-transactions" class="content-panel hidden-content">
-            <h1 class="text-4xl font-bold mb-8">Transaction Log</h1>
-            <div class="bg-white shadow rounded-lg overflow-hidden">
-                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">Date</th><th class="px-5 py-3">User</th><th class="px-5 py-3">Type</th><th class="px-5 py-3">Amount</th><th class="px-5 py-3">Details</th></tr></thead><tbody id="transaction-table-body"></tbody></table>
-            </div>
-        </div>
-
-        <div id="content-watch" class="content-panel hidden-content">
-            <h1 class="text-4xl font-bold mb-8">Community Watch</h1>
-            <p class="mb-4 text-gray-600">Scan tasks with AI to flag potentially inappropriate content. Results will appear below.</p>
-            <div class="flex items-center mb-4">
-                <button id="scan-tasks-btn" class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 shadow flex items-center">
-                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                    Scan All Tasks for Violations ✨
-                </button>
-                <div id="scan-loader" class="loader ml-4 hidden-content"></div>
-            </div>
-            <div class="bg-white shadow rounded-lg overflow-hidden">
-                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">Task Title & Description</th><th class="px-5 py-3">Flag Reason</th><th class="px-5 py-3">Posted By</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="watch-table-body"></tbody></table>
-            </div>
-        </div>
-
-        <div id="content-settings" class="content-panel hidden-content">
-            <h1 class="text-4xl font-bold mb-8">Platform Settings</h1>
-            <div id="settings-form-container" class="bg-white p-8 rounded-lg shadow max-w-2xl">
-                <!-- Form will be rendered here -->
-            </div>
-        </div>
+        <!-- Content will be dynamically injected here -->
     </main>
 </div>
 
-<!-- Modal Structure -->
-<div id="details-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden-content opacity-0 modal-overlay flex items-center justify-center p-4">
-    <div class="bg-white rounded-lg shadow-2xl w-full max-w-lg modal-container transform scale-95">
+<!-- Modal -->
+<div id="details-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden-content opacity-0 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl modal-container transform scale-95">
         <div class="flex justify-between items-center p-4 border-b"><h3 id="modal-title" class="text-2xl font-bold">Details</h3><button id="modal-close-button" class="text-gray-500 hover:text-gray-800 text-3xl">&times;</button></div>
         <div id="modal-body" class="p-6 max-h-[70vh] overflow-y-auto"></div>
-        <div id="modal-footer" class="p-4 bg-gray-50 border-t text-right"></div>
+        <div id="modal-footer" class="p-4 bg-gray-50 border-t text-right space-x-2"></div>
     </div>
 </div>
 
-<!-- Firebase SDKs -->
-<script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-    import { getFirestore, collection, getDocs, doc, updateDoc, getDoc, deleteDoc, query, orderBy, limit, FieldValue } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+<script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+<script src="https://www.gstatic.com/firebasejs/ui/4.8.1/firebase-ui-auth.js"></script>
+<link type="text/css" rel="stylesheet" href="https://www.gstatic.com/firebasejs/ui/4.8.1/firebase-ui-auth.css" />
 
+<script>
+    // --- Firebase Configuration ---
     const firebaseConfig = {
-        apiKey: "AIzaSyBS02g3Gtbz_v_cw9KxOffknGQGsvZKK_s",
-        authDomain: "helpify-flutter.firebaseapp.com",
-        projectId: "helpify-flutter",
-        storageBucket: "helpify-flutter.appspot.com",
-        messagingSenderId: "657614790732",
-        appId: "1:657614790732:web:b5619b35e6dc0dbb7614e9",
+      apiKey: "AIzaSyBS02g3Gtbz_v_cw9KxOffknGQGsvZKK_s",
+      authDomain: "helpify-flutter.firebaseapp.com",
+      projectId: "helpify-flutter",
+      storageBucket: "helpify-flutter.firebasestorage.app",
+      messagingSenderId: "657614790732",
+      appId: "1:657614790732:web:952d8c55eea79bd77614e9",
+      measurementId: "G-L51PN5NVM2"
     };
 
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
+    // --- Initialize Firebase ---
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    const ui = new firebaseui.auth.AuthUI(auth);
 
-    // --- State Management ---
-    let allUsers = [];
-    let allTasks = [];
-    let allVerifications = [];
-    let allReviews = [];
-    let allTransactions = [];
-    let platformSettings = {};
-    let signupChart = null;
-    let categoryChart = null;
-    const GEMINI_API_KEY = "AIzaSyBp4DPWJ1VgynLc-4NCcTHMdYJmmQxsnx0";
+    // --- Global State ---
+    let allUsers = [], allTasks = [], allVerifications = [];
 
-    // --- Modal Logic ---
-    const modal = document.getElementById('details-modal');
-    // --- Unchanged Modal Logic ---
-    function showModal(title, content, footerContent = '') { /* ... */ }
-    function hideModal() { /* ... */ }
+    // --- UI Elements ---
+    const authContainer = document.getElementById('auth-container');
+    const mainApp = document.getElementById('main-app');
+    const sidebarNav = document.getElementById('sidebar-nav');
+    const mainContent = document.querySelector('main');
+    const logoutBtn = document.getElementById('logout-btn');
 
-    // --- Unchanged Utility & Gemini Functions ---
-    const formatDate = (timestamp) => { /* ... */ };
-    const createStatusBadge = (status) => { /* ... */ };
-    const renderEmptyState = (tbody, colSpan, message) => { /* ... */ };
-    async function callGemini(prompt) { /* ... */ }
-
-    // --- Unchanged Data Fetching & Rendering Functions ---
-    async function fetchData(collectionName, sortField = "createdAt") { /* ... */ }
-    function renderDashboard() { /* ... */ }
-    function renderSignupChart() { /* ... */ }
-    function renderCategoryChart() { /* ... */ }
-    function renderUsers(usersToRender) { /* ... */ }
-    function renderTasks(tasksToRender) { /* ... */ }
-    function renderVerifications(verificationsToRender) { /* ... */ }
-    function renderFlaggedTasks(flaggedTasks) { /* ... */ }
-    function renderTransactions(transactionsToRender) { /* ... */ }
-    function renderSettings(settingsData) { /* ... */ }
-
-    // --- Action Handlers ---
-    async function handleSaveSettings() { /* ... */ }
-    async function handleGrantBonusTasks(userId, amount) { /* ... */ }
-    async function handleDeleteTask(taskId) { /* ... */ }
-
-    // --- MODIFIED: Verification action handler ---
-    async function handleVerificationAction(requestId, newStatus) {
-        const verificationRef = doc(db, "verification_requests", requestId);
-        const modalFooter = document.getElementById('modal-footer');
-        modalFooter.innerHTML = `<div class="loader mx-auto"></div>`;
-
-        try {
-            await updateDoc(verificationRef, { status: newStatus });
-            const requestDoc = await getDoc(verificationRef);
-            if (!requestDoc.exists()) throw new Error("Request not found");
-
-            const userId = requestDoc.data().userId;
-            if (!userId) throw new Error("User ID missing from request");
-
-            const userRef = doc(db, "users", userId);
-            if (newStatus === 'approved') {
-                await updateDoc(userRef, {
-                    isHelper: true,
-                    verificationStatus: 'verified',
-                    trustScore: FieldValue.increment(20)
-                });
-            } else if (newStatus === 'rejected') {
-                await updateDoc(userRef, { verificationStatus: 'rejected' });
+    // --- Auth Handling ---
+    const uiConfig = {
+        callbacks: {
+            signInSuccessWithAuthResult: function(authResult, redirectUrl) {
+                return false;
+            },
+            uiShown: function() {
+                document.getElementById('auth-loader').style.display = 'none';
             }
+        },
+        signInFlow: 'popup',
+        signInOptions: [
+            // CORRECTED: Phone provider configuration is an object
+            {
+              provider: firebase.auth.PhoneAuthProvider.PROVIDER_ID,
+              defaultCountry: 'LK' // Set the default country to Sri Lanka
+            }
+        ],
+        tosUrl: '#', // Required for phone auth
+        privacyPolicyUrl: '#' // Required for phone auth
+    };
 
-            allVerifications = await fetchData('verification_requests', 'submittedAt');
-            renderVerifications(allVerifications);
-            hideModal();
-            showModal("Success", `Request has been successfully ${newStatus}.`, `<button class="close-modal-btn px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600">Close</button>`);
+    auth.onAuthStateChanged(async (user) => {
+        if (user) {
+            const userDoc = await db.collection('users').doc(user.uid).get();
+            if (userDoc.exists && userDoc.data().isAdmin === true) {
+                authContainer.style.display = 'none';
+                mainApp.style.display = 'flex';
+                await initializeAdminPanel();
+            } else {
+                alert('Access Denied. You are not an administrator.');
+                auth.signOut();
+            }
+        } else {
+            authContainer.style.display = 'flex';
+            mainApp.style.display = 'none';
+            ui.start('#firebaseui-auth-container', uiConfig);
+        }
+        document.getElementById('auth-loader').style.display = 'none';
+    });
 
+    logoutBtn.addEventListener('click', () => auth.signOut());
+
+    // --- Core Panel Logic ---
+    async function initializeAdminPanel() {
+        showLoaderInContent('Initializing Dashboard...');
+        [allUsers, allTasks, allVerifications] = await Promise.all([
+            fetchData('users', 'createdAt'),
+            fetchData('tasks', 'timestamp'),
+            fetchData('verification_requests', 'submittedAt')
+        ]);
+        renderDashboard();
+    }
+
+    // --- Navigation ---
+    sidebarNav.addEventListener('click', (event) => {
+        const link = event.target.closest('.nav-link');
+        if (!link) return;
+        event.preventDefault();
+
+        document.querySelectorAll('.nav-link').forEach(l => {
+            l.classList.remove('bg-teal-100', 'text-teal-700', 'font-bold');
+            l.classList.add('text-gray-600');
+        });
+        link.classList.add('bg-teal-100', 'text-teal-700', 'font-bold');
+        link.classList.remove('text-gray-600');
+
+        const target = link.dataset.target;
+        showLoaderInContent(`Loading ${target}...`);
+
+        setTimeout(() => {
+             switch(target) {
+                case 'dashboard': renderDashboard(); break;
+                case 'users': renderUsers(); break;
+                case 'tasks': renderTasks(); break;
+                case 'verification': renderVerifications(); break;
+            }
+        }, 50);
+    });
+
+    // --- Render Functions ---
+    function renderDashboard() {
+        mainContent.innerHTML = `
+            <h1 class="text-4xl font-bold mb-4">Dashboard</h1>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white p-6 rounded-lg shadow flex items-center">
+                    <div class="p-3 rounded-full bg-teal-100 text-teal-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197m0 0A10.004 10.004 0 003 15"></path></svg></div>
+                    <div><h3 class="text-gray-500 text-lg">Total Users</h3><p class="text-3xl font-bold">${allUsers.length}</p></div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow flex items-center">
+                     <div class="p-3 rounded-full bg-sky-100 text-sky-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg></div>
+                    <div><h3 class="text-gray-500 text-lg">Total Tasks</h3><p class="text-3xl font-bold">${allTasks.length}</p></div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow flex items-center">
+                    <div class="p-3 rounded-full bg-emerald-100 text-emerald-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                    <div><h3 class="text-gray-500 text-lg">Completed Tasks</h3><p class="text-3xl font-bold">${allTasks.filter(t => t.status === 'completed').length}</p></div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow flex items-center">
+                    <div class="p-3 rounded-full bg-amber-100 text-amber-600 mr-4"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                    <div><h3 class="text-gray-500 text-lg">Pending Verifications</h3><p class="text-3xl font-bold">${allVerifications.filter(v => v.status === 'pending_review').length}</p></div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderUsers() {
+        mainContent.innerHTML = `
+            <div class="flex justify-between items-center mb-4">
+                <h1 class="text-4xl font-bold">User Management</h1>
+            </div>
+            <div class="bg-white shadow rounded-lg overflow-x-auto">
+                <table class="min-w-full leading-normal">
+                    <thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">User</th><th class="px-5 py-3">Email</th><th class="px-5 py-3">Joined</th><th class="px-5 py-3">Status</th></tr></thead>
+                    <tbody id="user-table-body"></tbody>
+                </table>
+            </div>`;
+        const tbody = document.getElementById('user-table-body');
+        if (allUsers.length === 0) {
+            renderEmptyState(tbody, 4, "No users found.");
+            return;
+        }
+        tbody.innerHTML = allUsers.map(user => `
+            <tr class="border-b border-gray-200 hover:bg-gray-50">
+                <td class="px-5 py-4">${user.displayName || 'N/A'}</td>
+                <td class="px-5 py-4">${user.email || 'N/A'}</td>
+                <td class="px-5 py-4">${formatDate(user.createdAt)}</td>
+                <td class="px-5 py-4">${createStatusBadge(user.isHelper ? 'Helper' : 'User')}</td>
+            </tr>
+        `).join('');
+    }
+
+    function renderTasks() {
+        mainContent.innerHTML = `
+            <h1 class="text-4xl font-bold mb-8">Task Management</h1>
+            <div class="bg-white shadow rounded-lg overflow-hidden">
+                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">Task Title</th><th class="px-5 py-3">Posted By</th><th class="px-5 py-3">Budget (LKR)</th><th class="px-5 py-3">Status</th></tr></thead><tbody id="task-table-body"></tbody></table>
+            </div>`;
+        const tbody = document.getElementById('task-table-body');
+        if (allTasks.length === 0) {
+            renderEmptyState(tbody, 4, "No tasks found.");
+            return;
+        }
+        tbody.innerHTML = allTasks.map(task => `
+            <tr class="border-b border-gray-200 hover:bg-gray-50">
+                <td class="px-5 py-4">${task.title}</td>
+                <td class="px-5 py-4">${task.posterName}</td>
+                <td class="px-5 py-4">${task.budget.toFixed(2)}</td>
+                <td class="px-5 py-4">${createStatusBadge(task.status)}</td>
+            </tr>
+        `).join('');
+    }
+
+    function renderVerifications() {
+        mainContent.innerHTML = `
+            <h1 class="text-4xl font-bold mb-8">Verification Hub</h1>
+            <div class="bg-white shadow rounded-lg overflow-hidden">
+                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">User</th><th class="px-5 py-3">Document Type</th><th class="px-5 py-3">Submitted At</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="verification-table-body"></tbody></table>
+            </div>`;
+        const tbody = document.getElementById('verification-table-body');
+        const pendingVerifications = allVerifications.filter(v => v.status === 'pending_review');
+        if (pendingVerifications.length === 0) {
+            renderEmptyState(tbody, 4, "No pending verifications.");
+            return;
+        }
+        tbody.innerHTML = pendingVerifications.map(v => `
+            <tr class="border-b border-gray-200 hover:bg-gray-50">
+                <td class="px-5 py-4">${v.userName}</td>
+                <td class="px-5 py-4">${v.documentType}</td>
+                <td class="px-5 py-4">${formatDate(v.submittedAt)}</td>
+                <td class="px-5 py-4"><button class="text-teal-600 hover:text-teal-800 font-semibold" data-action="viewVerification" data-id="${v.id}">Review</button></td>
+            </tr>
+        `).join('');
+    }
+
+    // --- Utility Functions ---
+    const formatDate = (timestamp) => {
+        if (!timestamp || !timestamp.toDate) return 'N/A';
+        return timestamp.toDate().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    };
+
+    const createStatusBadge = (status) => {
+        const statusColors = {
+            open: 'bg-blue-100 text-blue-800', assigned: 'bg-yellow-100 text-yellow-800',
+            completed: 'bg-green-100 text-green-800', cancelled: 'bg-red-100 text-red-800',
+            pending_review: 'bg-purple-100 text-purple-800', verified: 'bg-green-100 text-green-800',
+            Helper: 'bg-indigo-100 text-indigo-800', User: 'bg-gray-100 text-gray-800'
+        };
+        const color = statusColors[status] || 'bg-gray-100 text-gray-800';
+        return `<span class="px-2 py-1 text-xs font-semibold rounded-full ${color}">${status}</span>`;
+    };
+
+    const renderEmptyState = (tbody, colSpan, message) => {
+        tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center p-8 text-gray-500">${message}</td></tr>`;
+    };
+
+    const showLoaderInContent = (message = 'Loading...') => {
+        mainContent.innerHTML = `<div class="flex flex-col justify-center items-center h-full"><div class="loader"></div><p class="mt-4 text-gray-600">${message}</p></div>`;
+    };
+
+    // --- Data Fetching ---
+    async function fetchData(collectionName, sortField) {
+        try {
+            const q = db.collection(collectionName).orderBy(sortField, "desc");
+            const snapshot = await q.get();
+            return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         } catch (error) {
-            console.error("Error handling verification:", error);
-            showModal("Error", `Failed to update status: ${error.message}`, `<button class="close-modal-btn px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600">Close</button>`);
+            console.error(`Error fetching ${collectionName}:`, error);
+            alert(`Could not load data for ${collectionName}. Check Firestore rules and collection name.`);
+            return [];
         }
     }
 
-    // --- Event Listeners and Initial Load ---
-    document.addEventListener('DOMContentLoaded', () => {
-        const sidebarNav = document.getElementById('sidebar-nav');
-        // FIXED: Define mainContent before using it
-        const mainContent = document.querySelector('main');
+    // --- Event Delegation for Actions ---
+    mainContent.addEventListener('click', async (event) => {
+        const button = event.target.closest('button');
+        if (!button) return;
+        const { action, id } = button.dataset;
 
-        sidebarNav.addEventListener('click', (event) => {
-            const link = event.target.closest('.nav-link');
-            if (!link) return;
-            event.preventDefault();
+        if (action === 'viewVerification') {
+            const verification = allVerifications.find(v => v.id === id);
+            if (!verification) return;
 
-            document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('bg-teal-100', 'text-teal-700', 'font-bold'));
-            link.classList.add('bg-teal-100', 'text-teal-700', 'font-bold');
+            const bodyContent = `
+                <p><strong>User:</strong> ${verification.userName} (${verification.userId})</p>
+                <p><strong>Document Type:</strong> ${verification.documentType}</p>
+                <p><strong>Submitted:</strong> ${formatDate(verification.submittedAt)}</p>
+                <div class="mt-4">
+                    <p><strong>Document:</strong></p>
+                    <a href="${verification.documentUrl}" target="_blank" rel="noopener noreferrer">
+                        <img src="${verification.documentUrl}" alt="Verification Document" class="w-full h-auto rounded-lg border cursor-pointer hover:opacity-80"/>
+                    </a>
+                </div>
+            `;
+            const footerContent = `
+                <button data-action="rejectVerification" data-id="${id}" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600">Reject</button>
+                <button data-action="approveVerification" data-id="${id}" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600">Approve</button>
+            `;
+            showModal('Review Verification', bodyContent, footerContent);
+        }
+    });
 
-            const targetId = link.getAttribute('data-target');
-            document.querySelectorAll('.content-panel').forEach(panel => panel.classList.add('hidden-content'));
-            const contentPanel = document.getElementById(`content-${targetId}`);
-            if (contentPanel) {
-                contentPanel.classList.remove('hidden-content');
-            }
+    const modal = document.getElementById('details-modal');
+    modal.addEventListener('click', async (event) => {
+        const button = event.target.closest('button');
+        if (!button) return;
+        const { action, id } = button.dataset;
 
-            // Route to render functions
-            if (targetId === 'dashboard') renderDashboard();
-            else if (targetId === 'users') renderUsers(allUsers);
-            else if (targetId === 'tasks') renderTasks(allTasks);
-            else if (targetId === 'verification') renderVerifications(allVerifications);
-            else if (targetId === 'transactions') renderTransactions(allTransactions);
-            // else if (targetId === 'watch') renderCommunityWatch(); // Assuming this is defined
-            else if (targetId === 'settings') renderSettings(platformSettings);
-        });
-
-        mainContent.addEventListener('click', async (event) => {
-            const button = event.target.closest('button');
-            if (!button) return;
-
-            if (button.matches('#save-settings-btn')) {
-                handleSaveSettings();
-            }
-
-            // This listener is now more robust.
-            if (button.dataset.action === 'approveVerification' || button.dataset.action === 'rejectVerification') {
-                const requestId = button.dataset.id;
-                const newStatus = button.dataset.action === 'approveVerification' ? 'approved' : 'rejected';
-                await handleVerificationAction(requestId, newStatus);
-                return;
-            }
-        });
-
-        // This is a global listener for dynamically added modal close buttons
-        document.body.addEventListener('click', (event) => {
-            if (event.target.matches('.close-modal-btn')) {
-                hideModal();
-            }
-        });
-
-        document.getElementById('modal-close-button').addEventListener('click', hideModal);
-
-        async function initializeAdminPanel() {
-            document.querySelectorAll('tbody').forEach(tbody => {
-                const colSpan = tbody.previousElementSibling.firstElementChild.children.length;
-                tbody.innerHTML = `<tr><td colspan="${colSpan}" class="text-center p-8"><div class="loader mx-auto"></div></td></tr>`;
-            });
-
-            [allUsers, allTasks, allVerifications, allReviews, allTransactions, platformSettings] = await Promise.all([
-                fetchData('users', 'createdAt'),
-                fetchData('tasks', 'timestamp'),
-                fetchData('verification_requests', 'submittedAt'),
-                fetchData('reviews', 'timestamp'),
-                fetchData('transactions', 'timestamp'),
-                getDoc(doc(db, "platform_settings", "config")).then(d => d.exists() ? d.data() : {})
-            ]);
-
-            renderDashboard();
-            // Pre-render other sections so they are ready when clicked
-            renderUsers(allUsers);
-            renderTasks(allTasks);
-            renderVerifications(allVerifications);
-            renderTransactions(allTransactions);
-            renderSettings(platformSettings);
+        if (action === 'approveVerification' || action === 'rejectVerification') {
+            const newStatus = action === 'approveVerification' ? 'approved' : 'rejected';
+            await handleVerificationAction(id, newStatus);
         }
 
-        initializeAdminPanel();
+        if (button.id === 'modal-close-button') hideModal();
     });
+
+    async function handleVerificationAction(requestId, newStatus) {
+        const verificationRef = db.collection("verification_requests").doc(requestId);
+
+        try {
+            await db.runTransaction(async (transaction) => {
+                const verificationDoc = await transaction.get(verificationRef);
+                if (!verificationDoc.exists) throw new Error("Request not found");
+                const userId = verificationDoc.data().userId;
+                if (!userId) throw new Error("User ID missing from request");
+
+                const userRef = db.collection("users").doc(userId);
+                transaction.update(verificationRef, { status: newStatus });
+
+                if (newStatus === 'approved') {
+                    transaction.update(userRef, {
+                        isHelper: true,
+                        verificationStatus: 'verified',
+                        trustScore: firebase.firestore.FieldValue.increment(20)
+                    });
+                } else if (newStatus === 'rejected') {
+                    transaction.update(userRef, { verificationStatus: 'rejected' });
+                }
+            });
+
+            allVerifications = await fetchData('verification_requests', 'submittedAt');
+            renderVerifications();
+            renderDashboard();
+            hideModal();
+            alert(`Request has been successfully ${newStatus}.`);
+
+        } catch (error) {
+            console.error("Error handling verification:", error);
+            alert(`Failed to update status: ${error.message}`);
+        }
+    }
+
+    // --- Modal Logic ---
+    const modalTitle = document.getElementById('modal-title');
+    const modalBody = document.getElementById('modal-body');
+    const modalFooter = document.getElementById('modal-footer');
+
+    function showModal(title, content, footerContent = '') {
+        modalTitle.innerHTML = title;
+        modalBody.innerHTML = content;
+        modalFooter.innerHTML = footerContent;
+        modal.classList.remove('hidden-content', 'opacity-0');
+        modal.querySelector('.modal-container').classList.remove('scale-95');
+    }
+
+    function hideModal() {
+        modal.classList.add('opacity-0');
+        modal.querySelector('.modal-container').classList.add('scale-95');
+        setTimeout(() => modal.classList.add('hidden-content'), 300);
+    }
 </script>
+
 </body>
 </html>
