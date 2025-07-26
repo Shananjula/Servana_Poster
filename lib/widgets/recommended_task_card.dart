@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:helpify/models/task_model.dart';
-import 'package:helpify/screens/task_details_screen.dart';
+import 'package:servana/models/task_model.dart';
+import 'package:servana/screens/task_details_screen.dart';
 import 'package:intl/intl.dart';
 
 class RecommendedTaskCard extends StatelessWidget {

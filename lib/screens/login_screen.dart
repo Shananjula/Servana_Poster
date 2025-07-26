@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-// It's good practice to import your theme if you need to access specific colors directly,
-// though most styling will come from Theme.of(context).
-// import '../theme/theme.dart'; // Assuming your theme file is in lib/theme/theme.dart
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -13,6 +11,7 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _otpController = TextEditingController();
   final FocusNode _phoneFocusNode = FocusNode();
@@ -25,7 +24,6 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
-    // Request focus on the phone field initially
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_isOtpSent && mounted) {
         FocusScope.of(context).requestFocus(_phoneFocusNode);
@@ -42,13 +40,34 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  // --- DEFINITIVE FIX ---
+  /// Safely creates or updates a user document upon login.
+  /// Using `set` with `merge: true` avoids read-before-write race conditions
+  /// by creating the document if it's missing or updating it if it exists.
+  Future<void> _ensureUserDocumentExists(User user) async {
+    final userRef = _firestore.collection('users').doc(user.uid);
+
+    // This command will CREATE the document with these fields if it doesn't exist,
+    // or MERGE these fields into an existing document without overwriting other data.
+    // This requires only 'write' permission on the user's own document.
+    await userRef.set({
+      'phone': user.phoneNumber,
+      'createdAt': FieldValue.serverTimestamp(),
+      'status': 'active', // This ensures the isUserActive() rule will pass
+      'email': user.email,
+      'displayName': user.displayName,
+      'photoURL': user.photoURL,
+    }, SetOptions(merge: true)); // <-- The key is using merge: true
+  }
+
+
   void _showErrorSnackBar(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Theme.of(context).colorScheme.error,
-        behavior: SnackBarBehavior.floating, // More modern look
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
@@ -58,7 +77,7 @@ class _LoginScreenState extends State<LoginScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: Theme.of(context).colorScheme.primary, // Or your success color
+        backgroundColor: Theme.of(context).colorScheme.primary,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -70,30 +89,30 @@ class _LoginScreenState extends State<LoginScreen> {
       _showErrorSnackBar("Please enter your phone number.");
       return;
     }
-    // Basic validation for SL phone number length (without +94)
     if (_phoneController.text.trim().length < 9 || _phoneController.text.trim().length > 10) {
       _showErrorSnackBar("Please enter a valid 9 or 10 digit phone number.");
       return;
     }
 
     String phoneNumber = "+94${_phoneController.text.trim()}";
-
     setState(() => _isLoading = true);
 
     await _auth.verifyPhoneNumber(
       phoneNumber: phoneNumber,
       verificationCompleted: (PhoneAuthCredential credential) async {
-        // This callback will be triggered if auto-retrieval is successful
-        await _auth.signInWithCredential(credential);
+        UserCredential userCredential = await _auth.signInWithCredential(credential);
+        if (userCredential.user != null) {
+          // Ensure user document exists on auto-retrieval
+          await _ensureUserDocumentExists(userCredential.user!);
+        }
         if (mounted) {
           _showSuccessSnackBar("Signed in automatically!");
           setState(() => _isLoading = false);
         }
-        // Navigation will be handled by the StreamBuilder in main.dart
       },
       verificationFailed: (FirebaseAuthException e) {
         if (mounted) {
-          _showErrorSnackBar("Verification Failed: ${e.code}"); // Using e.code is often cleaner
+          _showErrorSnackBar("Verification Failed: ${e.code}");
           setState(() => _isLoading = false);
         }
       },
@@ -104,18 +123,11 @@ class _LoginScreenState extends State<LoginScreen> {
             _verificationId = verificationId;
             _isOtpSent = true;
             _isLoading = false;
-            // Request focus on the OTP field after OTP is sent
             FocusScope.of(context).requestFocus(_otpFocusNode);
           });
         }
       },
       codeAutoRetrievalTimeout: (String verificationId) {
-        // You might want to update _verificationId here as well
-        // if (_verificationId == null && mounted) { // Or if it matches the current one
-        //   setState(() {
-        //     _verificationId = verificationId;
-        //   });
-        // }
         print("codeAutoRetrievalTimeout: $verificationId");
       },
       timeout: const Duration(seconds: 60),
@@ -134,9 +146,13 @@ class _LoginScreenState extends State<LoginScreen> {
         verificationId: _verificationId!,
         smsCode: _otpController.text.trim(),
       );
-      await _auth.signInWithCredential(credential);
+      UserCredential userCredential = await _auth.signInWithCredential(credential);
+      if (userCredential.user != null) {
+        // Ensure user document exists on successful verification
+        await _ensureUserDocumentExists(userCredential.user!);
+      }
+
       if(mounted) _showSuccessSnackBar("Successfully signed in!");
-      // Navigation handled by StreamBuilder in main.dart
     } on FirebaseAuthException catch (e) {
       if (mounted) _showErrorSnackBar("Invalid OTP or error: ${e.code}");
     } finally {
@@ -146,7 +162,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Access theme data
     final theme = Theme.of(context);
     final textTheme = theme.textTheme;
     final colorScheme = theme.colorScheme;
@@ -155,56 +170,48 @@ class _LoginScreenState extends State<LoginScreen> {
     final buttonText = _isOtpSent ? 'Verify & Sign In' : 'Send OTP';
 
     return Scaffold(
-      // backgroundColor will be picked from AppTheme.lightTheme.scaffoldBackgroundColor
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0), // Adjusted padding
+            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Logo
                 Image.asset(
-                  'assets/logo.png', // Ensure this asset exists
+                  'assets/logo.png',
                   height: 80,
                   errorBuilder: (context, error, stackTrace) => Icon(
-                    Icons.task_alt_rounded, // Using a rounded version
+                    Icons.task_alt_rounded,
                     size: 80,
-                    color: colorScheme.primary, // Use themed color
+                    color: colorScheme.primary,
                   ),
                 ),
-                const SizedBox(height: 24), // Increased spacing
-
-                // Title Text
+                const SizedBox(height: 24),
                 Text(
-                  _isOtpSent ? 'Enter Verification Code' : 'Welcome to Helpify!', // Slightly friendlier title
+                  _isOtpSent ? 'Enter Verification Code' : 'Welcome to Helpify!',
                   textAlign: TextAlign.center,
                   style: textTheme.headlineMedium?.copyWith(
-                    color: colorScheme.primary, // Using primary color for title
+                    color: colorScheme.primary,
                   ),
                 ),
-                const SizedBox(height: 12), // Increased spacing
-
-                // Subtitle Text
+                const SizedBox(height: 12),
                 Text(
                   _isOtpSent
                       ? 'A 6-digit code was sent to your phone.'
-                      : 'Sign in or create an account with your phone number.', // Clearer subtitle
+                      : 'Sign in or create an account with your phone number.',
                   textAlign: TextAlign.center,
                   style: textTheme.bodyMedium?.copyWith(
-                    color: textTheme.bodySmall?.color, // Use themed secondary text color
+                    color: textTheme.bodySmall?.color,
                   ),
                 ),
-                const SizedBox(height: 48), // Increased spacing before inputs
-
-                // AnimatedSwitcher for Phone/OTP inputs
+                const SizedBox(height: 48),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 300),
                   transitionBuilder: (Widget child, Animation<double> animation) {
                     return FadeTransition(
                       opacity: animation,
-                      child: SlideTransition( // Added slide transition for better effect
+                      child: SlideTransition(
                         position: Tween<Offset>(
                           begin: const Offset(0.0, 0.1),
                           end: Offset.zero,
@@ -217,9 +224,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ? _buildOtpInputUI(theme, textTheme)
                       : _buildPhoneInputUI(theme, textTheme),
                 ),
-                const SizedBox(height: 24), // Increased spacing
-
-                // Action Button or Loading Indicator
+                const SizedBox(height: 24),
                 _isLoading
                     ? Center(
                   child: CircularProgressIndicator(
@@ -227,22 +232,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 )
                     : ElevatedButton(
-                  // The style will be picked from AppTheme.elevatedButtonTheme
                   onPressed: primaryAction,
                   child: Text(buttonText),
                 ),
                 const SizedBox(height: 16),
-
-                // "Different Number" TextButton
                 if (_isOtpSent && !_isLoading)
                   TextButton(
-                    // Style will be picked from AppTheme.textButtonTheme
                     onPressed: () {
                       setState(() {
                         _isOtpSent = false;
                         _otpController.clear();
-                        _phoneController.clear(); // Optionally clear phone too
-                        // Request focus on the phone field when going back
+                        _phoneController.clear();
                         FocusScope.of(context).requestFocus(_phoneFocusNode);
                       });
                     },
@@ -256,26 +256,23 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // --- Phone Input UI ---
   Widget _buildPhoneInputUI(ThemeData theme, TextTheme textTheme) {
     return Column(
-      key: const ValueKey('phone-input'), // Key for AnimatedSwitcher
+      key: const ValueKey('phone-input'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        TextFormField( // Using TextFormField for potential future validation
+        TextFormField(
           controller: _phoneController,
           focusNode: _phoneFocusNode,
           keyboardType: TextInputType.phone,
-          // The decoration will largely be picked from AppTheme.inputDecorationTheme
           decoration: const InputDecoration(
             hintText: '77 123 4567',
-            labelText: 'Phone Number', // Added label for better UX
-            prefixIcon: Icon(Icons.phone_android_rounded), // Slightly different icon
+            labelText: 'Phone Number',
+            prefixIcon: Icon(Icons.phone_android_rounded),
             prefixText: '+94 ',
-            // border property is handled by inputDecorationTheme in AppTheme
           ),
           style: textTheme.bodyLarge,
-          validator: (value) { // Example validator (can be expanded)
+          validator: (value) {
             if (value == null || value.trim().isEmpty) {
               return 'Phone number cannot be empty.';
             }
@@ -284,16 +281,15 @@ class _LoginScreenState extends State<LoginScreen> {
             }
             return null;
           },
-          autovalidateMode: AutovalidateMode.onUserInteraction, // Validate as user types
+          autovalidateMode: AutovalidateMode.onUserInteraction,
         ),
       ],
     );
   }
 
-  // --- OTP Input UI ---
   Widget _buildOtpInputUI(ThemeData theme, TextTheme textTheme) {
     return Column(
-      key: const ValueKey('otp-input'), // Key for AnimatedSwitcher
+      key: const ValueKey('otp-input'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         TextFormField(
@@ -302,14 +298,12 @@ class _LoginScreenState extends State<LoginScreen> {
           keyboardType: TextInputType.number,
           textAlign: TextAlign.center,
           maxLength: 6,
-          // Style for OTP input - large and spaced out
           style: textTheme.headlineMedium?.copyWith(letterSpacing: 10, fontWeight: FontWeight.bold),
           decoration: const InputDecoration(
-            hintText: '● ● ● ● ● ●', // Using dots for hint
-            hintStyle: TextStyle(letterSpacing: 10, fontWeight: FontWeight.bold), // Match hint style
-            counterText: "", // Hides the maxLength counter
-            labelText: 'OTP Code', // Added label
-            // border property is handled by inputDecorationTheme in AppTheme
+            hintText: '● ● ● ● ● ●',
+            hintStyle: TextStyle(letterSpacing: 10, fontWeight: FontWeight.bold),
+            counterText: "",
+            labelText: 'OTP Code',
           ),
           validator: (value) {
             if (value == null || value.trim().length != 6) {

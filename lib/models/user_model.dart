@@ -47,6 +47,14 @@ class HelpifyUser {
   final String verificationStatus; // e.g., 'not_verified', 'pending', 'rejected', 'verified'
   final VerificationTier verificationTier;
 
+  // --- NEW: Onboarding and Document Fields ---
+  final int onboardingStep; // Tracks which step they are on (0, 1, 2, etc.)
+  final String? nicFrontUrl;
+  final String? nicBackUrl;
+  final String? policeClearanceUrl;
+  final String? proofOfAddressUrl;
+  // Add other document URLs as needed (e.g., drivingLicenseUrl)
+
   // Calculated property for profile completion
   final double profileCompletion;
 
@@ -80,6 +88,12 @@ class HelpifyUser {
     this.initialCreditGranted = false,
     this.verificationStatus = 'not_verified',
     this.verificationTier = VerificationTier.none,
+    // --- NEW: Add to constructor ---
+    this.onboardingStep = 0, // Default to the first step
+    this.nicFrontUrl,
+    this.nicBackUrl,
+    this.policeClearanceUrl,
+    this.proofOfAddressUrl,
   }) : profileCompletion = _calculateProfileCompletion(
     displayName: displayName,
     photoURL: photoURL,
@@ -129,6 +143,12 @@ class HelpifyUser {
             (e) => e.name == data['verificationTier'],
         orElse: () => VerificationTier.none,
       ),
+      // --- NEW: Add to factory ---
+      onboardingStep: data['onboardingStep'] as int? ?? 0,
+      nicFrontUrl: data['nicFrontUrl'] as String?,
+      nicBackUrl: data['nicBackUrl'] as String?,
+      policeClearanceUrl: data['policeClearanceUrl'] as String?,
+      proofOfAddressUrl: data['proofOfAddressUrl'] as String?,
     );
   }
 

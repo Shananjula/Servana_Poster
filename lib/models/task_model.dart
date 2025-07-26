@@ -3,10 +3,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class Task {
   final String id;
   final String taskType;
-  final String? subCategory;
   final String title;
   final String description;
   final String category;
+  final String? subCategory;
   final GeoPoint? location;
   final String? locationAddress;
   final double budget;
@@ -18,21 +18,37 @@ class Task {
   final String posterName;
   final String? posterAvatarUrl;
   final int? posterTrustScore;
-  final Timestamp? timestamp;
-  final Timestamp? assignmentTimestamp;
   final String? assignedHelperId;
   final String? assignedHelperName;
   final String? assignedHelperAvatarUrl;
+  final List<String> participantIds;
+
+  // --- Fields for reciprocal contact info ---
+  final String? posterPhoneNumber;
+  final String? assignedHelperPhoneNumber;
+
+  // --- All other existing fields ---
   final String? assignedOfferId;
   final GeoPoint? helperLastLocation;
   final String? imageUrl;
-  final double? distanceKm;
-  final bool isUrgent;
-  final bool isFlashTask;
+  final Timestamp? timestamp;
+  final Timestamp? assignmentTimestamp;
   final Timestamp? expiresAt;
+  final Timestamp? helperStartedJourneyAt;
+  final Timestamp? helperArrivedAt;
+  final Timestamp? posterConfirmedStartAt;
+  final Timestamp? helperCompletedAt;
+  final Timestamp? posterConfirmedCompletionAt;
+  final Timestamp? paymentCompletedAt;
+  final Timestamp? ratedAt;
+  final String? confirmationCode;
+  final String? proofImageUrl;
   final String? cancellationReason;
   final String? cancelledBy;
-  final List<String> participantIds; // For easier activity querying
+  final String? disputeReason;
+  final String? disputeInitiatorId;
+  final Timestamp? disputeTimestamp;
+
 
   Task({
     required this.id,
@@ -50,41 +66,48 @@ class Task {
     required this.posterName,
     this.posterAvatarUrl,
     this.posterTrustScore,
-    this.timestamp,
-    this.assignmentTimestamp,
     this.assignedHelperId,
     this.assignedHelperName,
     this.assignedHelperAvatarUrl,
+    this.participantIds = const [],
+    // --- Added to constructor ---
+    this.posterPhoneNumber,
+    this.assignedHelperPhoneNumber,
+    // --- All other fields ---
     this.assignedOfferId,
     this.helperLastLocation,
     this.imageUrl,
-    this.distanceKm,
-    this.isUrgent = false,
-    this.isFlashTask = false,
+    this.timestamp,
+    this.assignmentTimestamp,
     this.expiresAt,
+    this.helperStartedJourneyAt,
+    this.helperArrivedAt,
+    this.posterConfirmedStartAt,
+    this.helperCompletedAt,
+    this.posterConfirmedCompletionAt,
+    this.paymentCompletedAt,
+    this.ratedAt,
+    this.confirmationCode,
+    this.proofImageUrl,
     this.cancellationReason,
     this.cancelledBy,
+    this.disputeReason,
+    this.disputeInitiatorId,
+    this.disputeTimestamp,
     required this.paymentMethod,
-    this.isCommissionFree = false,
-    this.participantIds = const [],
+    required this.isCommissionFree,
   });
 
   factory Task.fromFirestore(DocumentSnapshot<Map<String, dynamic>> snapshot) {
     final data = snapshot.data() ?? {};
-
-    GeoPoint? taskLocation;
-    if (data['location'] != null && data['location'] is GeoPoint) {
-      taskLocation = data['location'] as GeoPoint;
-    }
-
     return Task(
       id: snapshot.id,
       taskType: data['taskType'] as String? ?? 'physical',
-      subCategory: data['subCategory'] as String?,
       title: data['title'] as String? ?? 'No Title',
       description: data['description'] as String? ?? 'No Description',
       category: data['category'] as String? ?? 'Uncategorized',
-      location: taskLocation,
+      subCategory: data['subCategory'] as String?,
+      location: data['location'] as GeoPoint?,
       locationAddress: data['locationAddress'] as String?,
       budget: (data['budget'] as num? ?? 0.0).toDouble(),
       status: data['status'] as String? ?? 'unknown',
@@ -93,23 +116,38 @@ class Task {
       posterName: data['posterName'] as String? ?? 'Unknown Poster',
       posterAvatarUrl: data['posterAvatarUrl'] as String?,
       posterTrustScore: (data['posterTrustScore'] as num?)?.toInt(),
-      timestamp: data['timestamp'] as Timestamp?,
-      assignmentTimestamp: data['assignmentTimestamp'] as Timestamp?,
       assignedHelperId: data['assignedHelperId'] as String?,
       assignedHelperName: data['assignedHelperName'] as String?,
       assignedHelperAvatarUrl: data['assignedHelperAvatarUrl'] as String?,
+      participantIds: List<String>.from(data['participantIds'] ?? []),
+      paymentMethod: data['paymentMethod'] as String? ?? 'escrow',
+      isCommissionFree: data['isCommissionFree'] as bool? ?? false,
+
+      // Reading phone numbers from Firestore
+      posterPhoneNumber: data['posterPhoneNumber'] as String?,
+      assignedHelperPhoneNumber: data['assignedHelperPhoneNumber'] as String?,
+
+      // All other fields
       assignedOfferId: data['assignedOfferId'] as String?,
       helperLastLocation: data['helperLastLocation'] as GeoPoint?,
       imageUrl: data['imageUrl'] as String?,
-      distanceKm: (data['distanceKm'] as num?)?.toDouble(),
-      isUrgent: data['isUrgent'] as bool? ?? false,
-      isFlashTask: data['isFlashTask'] as bool? ?? false,
+      timestamp: data['timestamp'] as Timestamp?,
+      assignmentTimestamp: data['assignmentTimestamp'] as Timestamp?,
       expiresAt: data['expiresAt'] as Timestamp?,
+      helperStartedJourneyAt: data['helperStartedJourneyAt'] as Timestamp?,
+      helperArrivedAt: data['helperArrivedAt'] as Timestamp?,
+      posterConfirmedStartAt: data['posterConfirmedStartAt'] as Timestamp?,
+      helperCompletedAt: data['helperCompletedAt'] as Timestamp?,
+      posterConfirmedCompletionAt: data['posterConfirmedCompletionAt'] as Timestamp?,
+      paymentCompletedAt: data['paymentCompletedAt'] as Timestamp?,
+      ratedAt: data['ratedAt'] as Timestamp?,
+      confirmationCode: data['confirmationCode'] as String?,
+      proofImageUrl: data['proofImageUrl'] as String?,
       cancellationReason: data['cancellationReason'] as String?,
       cancelledBy: data['cancelledBy'] as String?,
-      paymentMethod: data['paymentMethod'] as String? ?? 'escrow',
-      isCommissionFree: data['isCommissionFree'] as bool? ?? false,
-      participantIds: List<String>.from(data['participantIds'] ?? []),
+      disputeReason: data['disputeReason'] as String?,
+      disputeInitiatorId: data['disputeInitiatorId'] as String?,
+      disputeTimestamp: data['disputeTimestamp'] as Timestamp?,
     );
   }
 
@@ -119,33 +157,45 @@ class Task {
       'title': title,
       'description': description,
       'category': category,
-      if (subCategory != null) 'subCategory': subCategory,
+      'subCategory': subCategory,
+      'location': location,
+      'locationAddress': locationAddress,
       'budget': budget,
       'status': status,
-      if (finalAmount != null) 'finalAmount': finalAmount,
-      'posterId': posterId,
-      'posterName': posterName,
-      'timestamp': timestamp ?? FieldValue.serverTimestamp(),
-      if (assignmentTimestamp != null) 'assignmentTimestamp': assignmentTimestamp,
-      if (location != null) 'location': location,
-      if (locationAddress != null) 'locationAddress': locationAddress,
-      if (posterAvatarUrl != null) 'posterAvatarUrl': posterAvatarUrl,
-      if (posterTrustScore != null) 'posterTrustScore': posterTrustScore,
-      if (assignedHelperId != null) 'assignedHelperId': assignedHelperId,
-      if (assignedHelperName != null) 'assignedHelperName': assignedHelperName,
-      if (assignedHelperAvatarUrl != null) 'assignedHelperAvatarUrl': assignedHelperAvatarUrl,
-      if (assignedOfferId != null) 'assignedOfferId': assignedOfferId,
-      if (helperLastLocation != null) 'helperLastLocation': helperLastLocation,
-      if (imageUrl != null) 'imageUrl': imageUrl,
-      if (distanceKm != null) 'distanceKm': distanceKm,
-      'isUrgent': isUrgent,
-      'isFlashTask': isFlashTask,
-      if (expiresAt != null) 'expiresAt': expiresAt,
-      if (cancellationReason != null) 'cancellationReason': cancellationReason,
-      if (cancelledBy != null) 'cancelledBy': cancelledBy,
+      'finalAmount': finalAmount,
       'paymentMethod': paymentMethod,
       'isCommissionFree': isCommissionFree,
+      'posterId': posterId,
+      'posterName': posterName,
+      'posterAvatarUrl': posterAvatarUrl,
+      'posterTrustScore': posterTrustScore,
+      'timestamp': timestamp,
+      'assignmentTimestamp': assignmentTimestamp,
+      'assignedHelperId': assignedHelperId,
+      'assignedHelperName': assignedHelperName,
+      'assignedHelperAvatarUrl': assignedHelperAvatarUrl,
+      'assignedOfferId': assignedOfferId,
+      'helperLastLocation': helperLastLocation,
+      'imageUrl': imageUrl,
+      'expiresAt': expiresAt,
+      'cancellationReason': cancellationReason,
+      'cancelledBy': cancelledBy,
       'participantIds': participantIds,
+      'helperStartedJourneyAt': helperStartedJourneyAt,
+      'helperArrivedAt': helperArrivedAt,
+      'posterConfirmedStartAt': posterConfirmedStartAt,
+      'helperCompletedAt': helperCompletedAt,
+      'posterConfirmedCompletionAt': posterConfirmedCompletionAt,
+      'paymentCompletedAt': paymentCompletedAt,
+      'ratedAt': ratedAt,
+      'confirmationCode': confirmationCode,
+      'proofImageUrl': proofImageUrl,
+      'disputeReason': disputeReason,
+      'disputeInitiatorId': disputeInitiatorId,
+      'disputeTimestamp': disputeTimestamp,
+      // --- Writing new fields to Firestore ---
+      'posterPhoneNumber': posterPhoneNumber,
+      'assignedHelperPhoneNumber': assignedHelperPhoneNumber,
     };
   }
 }

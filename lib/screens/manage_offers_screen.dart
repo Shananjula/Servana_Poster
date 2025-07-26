@@ -1,14 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'package:servana/services/firestore_service.dart';
 import 'package:url_launcher/url_launcher.dart';
-
-// Centralized models
 import '../models/task_model.dart';
 import '../models/offer_model.dart';
 import '../models/user_model.dart';
-
-// Screens for navigation
 import 'helper_public_profile_screen.dart';
 import 'conversation_screen.dart';
 
@@ -24,7 +21,6 @@ class ManageOffersScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // The stream now listens to the offers subcollection of the specific task
     final offersQuery = FirebaseFirestore.instance
         .collection('tasks')
         .doc(task.id)
@@ -101,36 +97,38 @@ class ManageOffersScreen extends StatelessWidget {
   }
 }
 
-// --- Offer Card Widget ---
 class OfferCard extends StatelessWidget {
   final Offer offer;
   final Task task;
   final HelpifyUser currentUser;
+  final FirestoreService _firestoreService = FirestoreService();
 
-  const OfferCard({
+  OfferCard({
     Key? key,
     required this.offer,
     required this.task,
     required this.currentUser,
   }) : super(key: key);
 
-  /// --- FIX: Updated Chat Logic ---
-  /// Creates a unique channel ID and ensures the channel document exists
-  /// before navigating to the ConversationScreen.
   Future<void> _startChat(BuildContext context) async {
     final otherUserId = offer.helperId;
     final currentUserId = currentUser.id;
-
-    // Create a consistent channel ID regardless of who starts the chat
     final List<String> ids = [currentUserId, otherUserId];
-    ids.sort(); // Sort the IDs to ensure the channel ID is always the same
-    final chatChannelId = ids.join('_');
+    ids.sort();
+
+    // --- THIS IS THE FIX ---
+    // The chatChannelId now includes the task.id, making it consistent
+    // with the ID created by the helper in the firestore_service.
+    final chatChannelId = ids.join('_${task.id}');
 
     final chatChannelDoc = FirebaseFirestore.instance.collection('chats').doc(chatChannelId);
 
-    // Create the chat channel document if it doesn't exist
+    // We still set the data to ensure the document exists if the poster initiates.
     await chatChannelDoc.set({
+      'taskId': task.id,
+      'taskTitle': task.title,
       'participants': [currentUserId, otherUserId],
+      'participantIds': [currentUserId, otherUserId],
       'participantNames': {
         currentUserId: currentUser.displayName ?? 'Me',
         otherUserId: offer.helperName,
@@ -139,7 +137,7 @@ class OfferCard extends StatelessWidget {
         currentUserId: currentUser.photoURL,
         otherUserId: offer.helperAvatarUrl,
       },
-    }, SetOptions(merge: true)); // Use merge to avoid overwriting existing chat data
+    }, SetOptions(merge: true));
 
     Navigator.of(context).push(MaterialPageRoute(
       builder: (ctx) => ConversationScreen(
@@ -150,50 +148,32 @@ class OfferCard extends StatelessWidget {
     ));
   }
 
-  // ... other methods (_requestNumber, _declineOffer, etc.) remain the same
   void _requestNumber(BuildContext context) {
     FirebaseFirestore.instance
-        .collection('tasks')
-        .doc(task.id)
-        .collection('offers')
-        .doc(offer.id)
+        .collection('tasks').doc(task.id).collection('offers').doc(offer.id)
         .update({'numberExchangeStatus': 'requested'});
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Phone number request sent!')),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Phone number request sent!')));
   }
 
   void _showCallOptions(BuildContext context) async {
     String? helperPhoneNumber;
-
     try {
       DocumentSnapshot userDoc = await FirebaseFirestore.instance.collection('users').doc(offer.helperId).get();
       if (userDoc.exists && userDoc.data() != null) {
         helperPhoneNumber = (userDoc.data() as Map<String, dynamic>)['phoneNumber'] as String?;
       }
     } catch (e) {
-      print("Error fetching helper's phone number: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Error fetching helper\'s phone number.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error fetching helper\'s phone number.')));
       return;
     }
-
     if (helperPhoneNumber == null || helperPhoneNumber.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Helper phone number is not available or not yet shared.')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Helper phone number is not available.')));
       return;
     }
-
     String formattedPhoneNumber = helperPhoneNumber.startsWith('+') ? helperPhoneNumber : '+94$helperPhoneNumber';
-
     showModalBottomSheet(
       context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (ctx) => Wrap(
         children: <Widget>[
           ListTile(
@@ -202,13 +182,7 @@ class OfferCard extends StatelessWidget {
             onTap: () async {
               Navigator.of(ctx).pop();
               final url = Uri.parse('tel:$formattedPhoneNumber');
-              if (await canLaunchUrl(url)) {
-                await launchUrl(url);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Could not make a call to $formattedPhoneNumber')),
-                );
-              }
+              if (await canLaunchUrl(url)) await launchUrl(url);
             },
           ),
           ListTile(
@@ -216,15 +190,8 @@ class OfferCard extends StatelessWidget {
             title: const Text('Call (WhatsApp)'),
             onTap: () async {
               Navigator.of(ctx).pop();
-              final whatsappNumber = formattedPhoneNumber.replaceAll(RegExp(r'[^0-9]'), '');
-              final whatsappUrl = Uri.parse('https://wa.me/$whatsappNumber');
-              if (await canLaunchUrl(whatsappUrl)) {
-                await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Could not open WhatsApp for $formattedPhoneNumber')),
-                );
-              }
+              final whatsappUrl = Uri.parse('https://wa.me/${formattedPhoneNumber.replaceAll(RegExp(r'[^0-9]'), '')}');
+              if (await canLaunchUrl(whatsappUrl)) await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
             },
           ),
         ],
@@ -235,124 +202,70 @@ class OfferCard extends StatelessWidget {
   void _declineOffer(BuildContext context) async {
     bool? confirm = await showDialog<bool>(
       context: context,
-      builder: (BuildContext ctx) {
-        return AlertDialog(
-          title: const Text('Decline Offer'),
-          content: Text('Are you sure you want to decline this offer from ${offer.helperName}? This cannot be undone.'),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('Cancel'),
-              onPressed: () => Navigator.of(ctx).pop(false),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: const Text('Decline'),
-              onPressed: () => Navigator.of(ctx).pop(true),
-            ),
-          ],
-        );
-      },
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Decline Offer'),
+        content: Text('Are you sure you want to decline this offer from ${offer.helperName}?'),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          TextButton(style: TextButton.styleFrom(foregroundColor: Colors.red), onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Decline')),
+        ],
+      ),
     );
-
     if (confirm != true) return;
-
     try {
-      await FirebaseFirestore.instance
-          .collection('tasks')
-          .doc(task.id)
-          .collection('offers')
-          .doc(offer.id)
-          .update({'status': 'declined'});
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Offer declined.')),
-      );
-
+      await FirebaseFirestore.instance.collection('tasks').doc(task.id).collection('offers').doc(offer.id).update({'status': 'declined'});
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer declined.')));
     } catch (e) {
-      print("Error declining offer: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to decline offer: ${e.toString()}'), backgroundColor: Colors.red),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to decline offer: ${e.toString()}')));
     }
   }
 
   void _acceptOffer(BuildContext context) async {
-    if (task.status != 'open') {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This task is no longer open for offers.')));
+    if (task.status != 'open' && task.status != 'negotiating') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This task is no longer open for offers.')));
       return;
     }
-
     bool? confirm = await showDialog<bool>(
       context: context,
-      builder: (BuildContext ctx) {
-        return AlertDialog(
-          title: const Text('Confirm Acceptance'),
-          content: Text('Are you sure you want to accept this offer from ${offer.helperName} for LKR ${NumberFormat("#,##0").format(offer.amount)}?'),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('Cancel'),
-              onPressed: () => Navigator.of(ctx).pop(false),
-            ),
-            ElevatedButton(
-              child: const Text('Accept Offer'),
-              onPressed: () => Navigator.of(ctx).pop(true),
-            ),
-          ],
-        );
-      },
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('Confirm Acceptance'),
+        content: Text('Are you sure you want to accept this offer from ${offer.helperName} for LKR ${NumberFormat("#,##0").format(offer.amount)}?'),
+        actions: <Widget>[
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Accept Offer')),
+        ],
+      ),
     );
-
     if (confirm != true) return;
-
     try {
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final taskRef = FirebaseFirestore.instance.collection('tasks').doc(task.id);
-
-        transaction.update(taskRef, {
-          'status': 'assigned',
-          'assignedHelperId': offer.helperId,
-          'assignedHelperName': offer.helperName,
-          'assignedHelperAvatarUrl': offer.helperAvatarUrl,
-          'assignedOfferId': offer.id,
-          'finalAmount': offer.amount,
-          'assignmentTimestamp': FieldValue.serverTimestamp(),
-        });
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Offer from ${offer.helperName} accepted!'),
-          backgroundColor: Colors.green,
-        ),
+      final List<String> ids = [currentUser.id, offer.helperId];
+      ids.sort();
+      final chatChannelId = ids.join('_${task.id}');
+      await _firestoreService.sendActionableChatMessage(
+        chatChannelId: chatChannelId,
+        taskId: task.id,
+        senderId: currentUser.id,
+        helperId: offer.helperId,
+        text: 'I have accepted your offer of LKR ${offer.amount}.',
+        actionType: 'poster_accept',
+        offerAmount: offer.amount,
       );
-
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Offer from ${offer.helperName} accepted!'), backgroundColor: Colors.green));
       _startChat(context);
-
     } catch (e) {
-      print("Error accepting offer: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to accept offer: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to accept offer: ${e.toString()}')));
     }
   }
 
   void _viewHelperProfile(BuildContext context, String helperId) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => HelperPublicProfileScreen(helperId: helperId)),
-    );
+    Navigator.push(context, MaterialPageRoute(builder: (context) => HelperPublicProfileScreen(helperId: helperId)));
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool isTaskOpen = task.status == 'open';
+    final bool isTaskOpen = task.status == 'open' || task.status == 'negotiating';
     final bool isThisOfferAccepted = task.assignedOfferId == offer.id;
     final bool isOfferDeclined = offer.status == 'declined';
-
     final String helperAvatarUrl = offer.helperAvatarUrl ?? '';
     final int helperTrustScore = offer.helperTrustScore ?? 0;
 
@@ -404,11 +317,7 @@ class OfferCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 width: double.infinity,
-                decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.grey.shade300, width: 0.5)
-                ),
+                decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey.shade300, width: 0.5)),
                 child: Text('"${offer.message}"', style: TextStyle(fontSize: 15, color: Colors.grey[800], fontStyle: FontStyle.italic)),
               ),
             ],
@@ -427,26 +336,13 @@ class OfferCard extends StatelessWidget {
                     ElevatedButton(onPressed: () => _acceptOffer(context), child: const Text('Accept')),
                   ] else
                     Chip(label: Text('Task ${task.status}'), backgroundColor: Colors.grey.withOpacity(0.2)),
-
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                  label: const Text('Chat'),
-                  onPressed: () => _startChat(context),
-                ),
+                OutlinedButton.icon(icon: const Icon(Icons.chat_bubble_outline, size: 18), label: const Text('Chat'), onPressed: () => _startChat(context)),
                 if (offer.numberExchangeStatus == 'accepted')
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.call_outlined, size: 18, color: Colors.green),
-                    label: const Text('View No.'),
-                    onPressed: () => _showCallOptions(context),
-                  )
+                  OutlinedButton.icon(icon: const Icon(Icons.call_outlined, size: 18, color: Colors.green), label: const Text('View No.'), onPressed: () => _showCallOptions(context))
                 else if (offer.numberExchangeStatus == 'requested')
                   const Chip(label: Text('Requested...'))
                 else if(isThisOfferAccepted || isTaskOpen)
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.phone_in_talk_outlined, size: 18),
-                      label: const Text('Request No.'),
-                      onPressed: () => _requestNumber(context),
-                    ),
+                    OutlinedButton.icon(icon: const Icon(Icons.phone_in_talk_outlined, size: 18), label: const Text('Request No.'), onPressed: () => _requestNumber(context)),
               ],
             )
           ],

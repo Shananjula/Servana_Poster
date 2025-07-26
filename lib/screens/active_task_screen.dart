@@ -1,466 +1,470 @@
-import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+// --- FIX: Hide the conflicting 'Task' class from firebase_storage ---
+import 'package:firebase_storage/firebase_storage.dart' hide Task;
+import 'package:image_picker/image_picker.dart';
+import 'package:provider/provider.dart';
+import 'package:servana/models/task_model.dart';
+import 'package:servana/models/task_modification_model.dart';
+import 'package:servana/providers/user_provider.dart';
+import 'package:servana/services/firestore_service.dart';
 import 'package:intl/intl.dart';
+import 'package:servana/widgets/contact_card_widget.dart';
+import 'package:servana/widgets/live_location_map_widget.dart';
 
-// Import your centralized models
-import '../models/task_model.dart';
-import '../models/user_model.dart';
+class ActiveTaskScreen extends StatefulWidget {
+  final String taskId;
+  const ActiveTaskScreen({Key? key, required this.taskId}) : super(key: key);
 
-// Import other screens for navigation
-import 'rating_screen.dart';
+  @override
+  State<ActiveTaskScreen> createState() => _ActiveTaskScreenState();
+}
 
-// --- The Dynamic Active Task Screen ---
-class ActiveTaskScreen extends StatelessWidget {
-  final Task initialTask;
+class _ActiveTaskScreenState extends State<ActiveTaskScreen> {
+  final FirestoreService _firestoreService = FirestoreService();
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final TextEditingController _codeController = TextEditingController();
+  bool _isSubmittingCode = false;
+  XFile? _proofImageFile;
+  bool _isUploadingProof = false;
 
-  const ActiveTaskScreen({Key? key, required this.initialTask}) : super(key: key);
+  @override
+  void dispose() {
+    _codeController.dispose();
+    super.dispose();
+  }
+
+  void _submitConfirmationCode(String taskId) async {
+    if (_codeController.text.length != 4) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please enter the 4-digit code."), backgroundColor: Colors.orange));
+      return;
+    }
+    setState(() => _isSubmittingCode = true);
+    try {
+      await _firestoreService.helperConfirmsArrivalWithCode(taskId, _codeController.text);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmittingCode = false);
+        _codeController.clear();
+      }
+    }
+  }
+
+  Future<void> _uploadProofAndCompleteTask(String taskId) async {
+    if (_proofImageFile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please select a photo as proof."), backgroundColor: Colors.orange));
+      return;
+    }
+    setState(() => _isUploadingProof = true);
+    try {
+      final fileName = '${widget.taskId}_proof_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref = FirebaseStorage.instance.ref().child('task_proofs').child(fileName);
+      await ref.putFile(File(_proofImageFile!.path));
+      final imageUrl = await ref.getDownloadURL();
+      await _firestoreService.helperCompletesTask(taskId, proofImageUrl: imageUrl);
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error uploading proof: ${e.toString()}"), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) setState(() => _isUploadingProof = false);
+    }
+  }
+
+  void _showDisputeDialog(Task task, String currentUserId) {
+    final reasonController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Report an Issue"),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text("Please describe the issue. Our support team will review this and contact both parties."),
+          const SizedBox(height: 16),
+          TextField(controller: reasonController, decoration: const InputDecoration(labelText: "Reason for dispute", border: OutlineInputBorder()), maxLines: 3)
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              if (reasonController.text.trim().isEmpty) return;
+              _firestoreService.initiateDispute(taskId: task.id, reason: reasonController.text.trim(), initiatedByUserId: currentUserId);
+              Navigator.of(context).pop();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("Submit Dispute"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCancelDialog(Task task, String currentUserId) {
+    final reasonController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Cancel Task"),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text("Are you sure you want to cancel this task? This action cannot be undone."),
+          const SizedBox(height: 16),
+          TextField(controller: reasonController, decoration: const InputDecoration(labelText: "Reason for cancellation", border: OutlineInputBorder()), maxLines: 2)
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text("Go Back")),
+          ElevatedButton(
+            onPressed: () {
+              if (reasonController.text.trim().isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please provide a reason.")));
+                return;
+              }
+              _firestoreService.cancelTask(taskId: task.id, reason: reasonController.text.trim(), cancelledById: currentUserId);
+              Navigator.of(context).pop();
+              Navigator.of(context).pop();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text("Confirm Cancellation"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showModificationDialog() {
+    final descriptionController = TextEditingController();
+    final costController = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Request Add-on / Scope Change"),
+        content: Form(
+          key: formKey,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text("Describe the additional work and the extra cost required."),
+            const SizedBox(height: 16),
+            TextFormField(controller: descriptionController, decoration: const InputDecoration(labelText: "Description of extra work", border: OutlineInputBorder()), validator: (val) => val!.isEmpty ? "Description cannot be empty" : null),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: costController,
+              decoration: const InputDecoration(labelText: "Additional Cost (LKR)", border: OutlineInputBorder()),
+              keyboardType: TextInputType.number,
+              validator: (val) {
+                if (val!.isEmpty) return "Cost cannot be empty";
+                if (double.tryParse(val) == null) return "Invalid number";
+                return null;
+              },
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text("Cancel")),
+          ElevatedButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                _firestoreService.requestTaskModification(taskId: widget.taskId, description: descriptionController.text, additionalCost: double.parse(costController.text));
+                Navigator.of(context).pop();
+              }
+            },
+            child: const Text("Submit Request"),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    // This outer StreamBuilder ensures the whole screen reacts to status changes
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('tasks').doc(initialTask.id).snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(body: Center(child: CircularProgressIndicator()));
-        }
-        if (!snapshot.hasData || !snapshot.data!.exists || snapshot.error != null) {
-          return Scaffold(appBar: AppBar(), body: const Center(child: Text("Error loading task details.")));
-        }
+    final user = context.watch<UserProvider>().user;
+    if (user == null) return const Scaffold(body: Center(child: Text("User not found.")));
 
-        final task = Task.fromFirestore(snapshot.data!);
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('tasks').doc(widget.taskId).snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        if (!snapshot.data!.exists) return const Scaffold(body: Center(child: Text("Task not found.")));
+
+        final task = Task.fromFirestore(snapshot.data! as DocumentSnapshot<Map<String, dynamic>>);
+        final bool isPoster = user.id == task.posterId;
+        final List<String> activeStatuses = ['assigned', 'en_route', 'arrived', 'in_progress', 'pending_completion'];
+        final bool isTaskActive = activeStatuses.contains(task.status);
 
         return Scaffold(
-          appBar: AppBar(title: Text(task.title)),
-          body: Column(
-            children: [
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 400),
-                  child: _buildContentForStatus(context, task),
+          appBar: AppBar(
+            title: Text(isPoster ? 'Manage Your Task' : 'Your Active Job'),
+            actions: [
+              if (isTaskActive)
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    if (value == 'dispute') _showDisputeDialog(task, user.id);
+                    if (value == 'cancel') _showCancelDialog(task, user.id);
+                  },
+                  itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                    const PopupMenuItem<String>(value: 'dispute', child: ListTile(leading: Icon(Icons.report_problem_outlined), title: Text('Report an Issue'))),
+                    const PopupMenuItem<String>(value: 'cancel', child: ListTile(leading: Icon(Icons.cancel_outlined, color: Colors.red), title: Text('Cancel Task', style: TextStyle(color: Colors.red)))),
+                  ],
                 ),
-              ),
-              _buildBottomBarForStatus(context, task),
             ],
+          ),
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                _TaskSummaryCard(task: task),
+                if (isPoster) _buildModificationsStream(task),
+                const SizedBox(height: 20),
+                _buildTaskActionFlow(context, task, isPoster),
+                const SizedBox(height: 20),
+                ContactCard(task: task, isPoster: isPoster),
+              ],
+            ),
           ),
         );
       },
     );
   }
 
-  // --- Widget Switcher Logic ---
-  Widget _buildContentForStatus(BuildContext context, Task task) {
+  Widget _buildTaskActionFlow(BuildContext context, Task task, bool isPoster) {
     switch (task.status) {
       case 'assigned':
-        return HelperOnTheWayView(key: ValueKey(task.id), task: task);
+        return isPoster ? const _StatusInfoCard(title: 'Waiting for Helper', message: 'The helper has been assigned. They will notify you when they are on their way.', icon: Icons.hourglass_top_rounded) : _ActionCard(title: 'Ready to Go?', message: 'Let the poster know when you start your journey. This will enable live location sharing.', buttonText: 'Start Journey', onPressed: () => _firestoreService.helperStartsJourney(task.id));
+      case 'en_route':
+        return isPoster ? LiveLocationMap(task: task) : _ActionCard(title: 'Journey Started', message: 'Your location is being shared. When you arrive at the destination, tap the button below.', buttonText: 'I Have Arrived', onPressed: () => _firestoreService.helperArrives(task.id));
+      case 'arrived':
+        return isPoster ? _ConfirmationCodeCard(code: task.confirmationCode ?? '----') : _EnterCodeCard(controller: _codeController, isLoading: _isSubmittingCode, onSubmit: () => _submitConfirmationCode(task.id));
       case 'in_progress':
-        return TaskInProgressView(key: const ValueKey('in_progress'), task: task);
-      case 'finished':
-        return TaskFinishedView(key: const ValueKey('finished'), task: task);
-      case 'completed':
-        return TaskCompletedView(key: const ValueKey('completed'), task: task);
-      case 'cancelled':
-        return TaskCancelledView(key: const ValueKey('cancelled'), task: task);
-      default:
-        return Center(child: Text("Current task status: ${task.status}"));
-    }
-  }
-
-  // --- UPDATED: Main logic for displaying the correct action bar ---
-  Widget _buildBottomBarForStatus(BuildContext context, Task task) {
-    final bool isPoster = FirebaseAuth.instance.currentUser?.uid == task.posterId;
-
-    // Logic for the Poster
-    if (isPoster) {
-      switch (task.status) {
-        case 'assigned':
-          return _buildDigitalHandshakeBar(context, task);
-        case 'in_progress':
-          return _buildCancelTaskBar(context, task);
-        case 'finished':
-        // Here we check the payment method to decide which button to show
-          if (task.paymentMethod == 'cash') {
-            return _buildConfirmCashPaymentBar(context, task);
-          } else {
-            // For 'escrow' payments, this would lead to a payment release screen
-            // For now, it will navigate to the rating screen directly for simplicity.
-            return _buildPaymentBar(context, task);
-          }
-        default:
-          return const SizedBox.shrink();
-      }
-    }
-    // Logic for the Helper
-    else {
-      switch (task.status) {
-        case 'in_progress':
-          return _buildMarkAsFinishedBar(context, task);
-        default:
-          return const SizedBox.shrink();
-      }
-    }
-  }
-
-  // --- Bottom Action Bar Builders ---
-
-  // For the Poster when Helper is on the way
-  Widget _buildDigitalHandshakeBar(BuildContext context, Task task) {
-    return Container(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-        color: Colors.white,
-        child: ElevatedButton.icon(
-          icon: const Icon(Icons.handshake_outlined),
-          label: const Text("Confirm Helper's Arrival"),
-          onPressed: () => FirebaseFirestore.instance.collection('tasks').doc(task.id).update({'status': 'in_progress'}),
-          style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-        ));
-  }
-
-  // For the Poster when task is in progress
-  Widget _buildCancelTaskBar(BuildContext context, Task task) {
-    return Container(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-        color: Colors.white,
-        child: OutlinedButton.icon(
-          icon: const Icon(Icons.cancel_outlined),
-          label: const Text("Cancel Task"),
-          onPressed: () => showDialog(context: context, builder: (ctx) => CancellationDialog(task: task)),
-          style: OutlinedButton.styleFrom(minimumSize: const Size(double.infinity, 50), foregroundColor: Colors.red, side: const BorderSide(color: Colors.red), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-        ));
-  }
-
-  // For the Helper when task is in progress
-  Widget _buildMarkAsFinishedBar(BuildContext context, Task task) {
-    return Container(
-        padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-        color: Colors.white,
-        child: ElevatedButton.icon(
-          icon: const Icon(Icons.check_circle_outline),
-          label: const Text("Mark Task as Finished"),
-          onPressed: () => FirebaseFirestore.instance.collection('tasks').doc(task.id).update({'status': 'finished'}),
-          style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50), backgroundColor: Colors.green, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-        ));
-  }
-
-  // --- NEW: Action bar for Poster to confirm cash payment ---
-  Widget _buildConfirmCashPaymentBar(BuildContext context, Task task) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      color: Colors.white,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text(
-            "The helper has marked this task as finished. Please confirm you have paid them in cash.",
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: () {
-              // Mark the task as completed and navigate both users to rating screen
-              _completeTaskAndRate(context, task);
+        if (isPoster) return const _StatusInfoCard(title: 'Task In Progress', message: 'Your helper is currently working. You will be notified upon completion.', icon: Icons.construction_rounded);
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _CompleteTaskCard(
+            isLoading: _isUploadingProof,
+            imageFile: _proofImageFile,
+            onPickImage: () async {
+              final file = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 85);
+              if (file != null) setState(() => _proofImageFile = file);
             },
-            child: const Text("I Have Paid in Cash"),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          )
-        ],
-      ),
-    );
-  }
-
-  // For Poster, for Escrow payments
-  Widget _buildPaymentBar(BuildContext context, Task task) {
-    return Container(
-        padding: const EdgeInsets.all(20),
-        color: Colors.white,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Text("Task is complete! Please release the payment and rate your helper.", textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            ElevatedButton(
-                child: const Text("Release Payment & Rate"),
-                onPressed: () => _completeTaskAndRate(context, task), // For now, this directly completes the task
-                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))))
-          ],
-        ));
-  }
-
-  // --- Helper function to complete the task and navigate to rating ---
-  Future<void> _completeTaskAndRate(BuildContext context, Task task) async {
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return;
-
-    // In a real app, this would be a cloud function triggered after payment release.
-    // For now, we update the status directly.
-    await FirebaseFirestore.instance.collection('tasks').doc(task.id).update({
-      'status': 'completed',
-      'completedAt': FieldValue.serverTimestamp(),
-    });
-
-    // Determine who to rate
-    String personToRateId;
-    String personToRateName;
-    String? personToRateAvatarUrl;
-
-    if (currentUser.uid == task.posterId) {
-      personToRateId = task.assignedHelperId ?? '';
-      personToRateName = task.assignedHelperName ?? 'Helper';
-      personToRateAvatarUrl = task.assignedHelperAvatarUrl;
-    } else {
-      // This case is for the helper, who would see the rating screen after Poster pays.
-      personToRateId = task.posterId;
-      personToRateName = task.posterName;
-      personToRateAvatarUrl = task.posterAvatarUrl;
-    }
-
-    if (personToRateId.isEmpty) return;
-
-    // Navigate to the rating screen
-    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (ctx) => RatingScreen(
-      task: task,
-      personToRateId: personToRateId,
-      personToRateName: personToRateName,
-      personToRateAvatarUrl: personToRateAvatarUrl,
-    )));
-  }
-}
-
-
-// --- Status-Specific Views (No changes needed below this line) ---
-class HelperOnTheWayView extends StatefulWidget {
-  final Task task;
-  const HelperOnTheWayView({Key? key, required this.task}) : super(key: key);
-  @override
-  _HelperOnTheWayViewState createState() => _HelperOnTheWayViewState();
-}
-class _HelperOnTheWayViewState extends State<HelperOnTheWayView> {
-  final Completer<GoogleMapController> _mapController = Completer();
-  Set<Marker> _markers = {};
-  @override
-  void initState() {
-    super.initState();
-    _updateMarkers(widget.task);
-  }
-  @override
-  void didUpdateWidget(covariant HelperOnTheWayView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.task.helperLastLocation != oldWidget.task.helperLastLocation) {
-      _updateMarkers(widget.task);
-      _updateCameraPosition(widget.task);
-    }
-  }
-  void _updateMarkers(Task task) {
-    final Set<Marker> markers = {};
-    if (task.location != null) {
-      markers.add(Marker(
-        markerId: const MarkerId('task_destination'),
-        position: LatLng(task.location!.latitude, task.location!.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        infoWindow: const InfoWindow(title: 'Task Location'),
-      ));
-    }
-    if (task.helperLastLocation != null) {
-      markers.add(Marker(
-        markerId: const MarkerId('helper_location'),
-        position: LatLng(task.helperLastLocation!.latitude, task.helperLastLocation!.longitude),
-        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueGreen),
-        infoWindow: InfoWindow(title: '${task.assignedHelperName ?? 'Helper'} is here'),
-      ));
-    }
-    if(mounted) {
-      setState(() {
-        _markers = markers;
-      });
-    }
-  }
-  Future<void> _updateCameraPosition(Task task) async {
-    final controller = await _mapController.future;
-    final taskLocation = task.location;
-    final helperLocation = task.helperLastLocation;
-    if (taskLocation != null && helperLocation != null) {
-      controller.animateCamera(CameraUpdate.newLatLngBounds(
-        LatLngBounds(
-          southwest: LatLng(
-            taskLocation.latitude < helperLocation.latitude ? taskLocation.latitude : helperLocation.latitude,
-            taskLocation.longitude < helperLocation.longitude ? taskLocation.longitude : helperLocation.longitude,
+            onComplete: () => _uploadProofAndCompleteTask(task.id),
           ),
-          northeast: LatLng(
-            taskLocation.latitude > helperLocation.latitude ? taskLocation.latitude : helperLocation.latitude,
-            taskLocation.longitude > helperLocation.longitude ? taskLocation.longitude : helperLocation.longitude,
-          ),
-        ),
-        100.0,
-      ));
-    } else if (taskLocation != null) {
-      controller.animateCamera(CameraUpdate.newLatLngZoom(LatLng(taskLocation.latitude, taskLocation.longitude), 15));
+          const SizedBox(height: 12),
+          OutlinedButton.icon(onPressed: _showModificationDialog, icon: const Icon(Icons.add_shopping_cart_rounded), label: const Text("Request Add-on / Scope Change"), style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), foregroundColor: Theme.of(context).primaryColor))
+        ]);
+      case 'pending_completion':
+        return isPoster ? _ConfirmCompletionCard(task: task, onConfirm: () => _firestoreService.posterConfirmsCompletion(context, task)) : const _StatusInfoCard(title: 'Waiting for Final Confirmation', message: 'The poster has been notified. Payment will be processed upon their confirmation.', icon: Icons.price_check_rounded);
+      case 'pending_payment':
+      case 'pending_rating':
+        return const _StatusInfoCard(title: 'Finalizing Task', message: 'Please follow the prompts to complete payment and leave a rating.', icon: Icons.paid_outlined, color: Colors.green);
+      case 'closed':
+        return const _StatusInfoCard(title: 'Task Complete!', message: 'This task has been paid, rated, and is now closed. Thank you!', icon: Icons.check_circle_rounded, color: Colors.green);
+      case 'in_dispute':
+        return const _StatusInfoCard(title: 'Task in Dispute', message: 'An issue has been reported. Our support team will contact you shortly to mediate.', icon: Icons.gavel_rounded, color: Colors.red);
+      case 'cancelled':
+        return _StatusInfoCard(title: 'Task Cancelled', message: 'This task was cancelled. Reason: ${task.cancellationReason ?? "No reason provided."}', icon: Icons.do_not_disturb_on_outlined, color: Colors.grey);
+      default:
+        return _StatusInfoCard(title: 'Status: ${task.status}', message: 'The task is in an unknown state.');
     }
   }
-  @override
-  Widget build(BuildContext context) {
-    final initialCamPosition = widget.task.location != null
-        ? CameraPosition(target: LatLng(widget.task.location!.latitude, widget.task.location!.longitude), zoom: 14)
-        : const CameraPosition(target: LatLng(6.9271, 79.8612), zoom: 11);
-    return GoogleMap(
-      key: ValueKey(widget.task.id),
-      mapType: MapType.normal,
-      initialCameraPosition: initialCamPosition,
-      markers: _markers,
-      onMapCreated: (GoogleMapController controller) {
-        if (!_mapController.isCompleted) {
-          _mapController.complete(controller);
-          _updateCameraPosition(widget.task);
-        }
+
+  Widget _buildModificationsStream(Task task) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: _db.collection('tasks').doc(task.id).collection('modifications').where('status', isEqualTo: 'pending').snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) return const SizedBox.shrink();
+        final modifications = snapshot.data!.docs.map((doc) => TaskModification.fromFirestore(doc as DocumentSnapshot<Map<String, dynamic>>)).toList();
+        return Column(
+          children: modifications.map((mod) {
+            return Card(
+              margin: const EdgeInsets.only(top: 20),
+              color: Colors.amber.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text("Add-on Request", style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.amber.shade800)),
+                  const SizedBox(height: 8),
+                  Text('"${mod.description}"', style: const TextStyle(fontStyle: FontStyle.italic)),
+                  const SizedBox(height: 8),
+                  Text("Additional Cost: LKR ${NumberFormat("#,##0").format(mod.additionalCost)}", style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 16),
+                  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    TextButton(onPressed: () => _firestoreService.respondToModification(taskId: task.id, modificationId: mod.id, additionalCost: mod.additionalCost, isApproved: false), child: const Text("Reject", style: TextStyle(color: Colors.red))),
+                    const SizedBox(width: 8),
+                    ElevatedButton(onPressed: () => _firestoreService.respondToModification(taskId: task.id, modificationId: mod.id, additionalCost: mod.additionalCost, isApproved: true), child: const Text("Approve")),
+                  ])
+                ]),
+              ),
+            );
+          }).toList(),
+        );
       },
     );
   }
 }
-class TaskInProgressView extends StatelessWidget {
+
+// --- ALL REQUIRED HELPER WIDGETS ---
+class _TaskSummaryCard extends StatelessWidget {
   final Task task;
-  const TaskInProgressView({Key? key, required this.task}) : super(key: key);
-  @override
-  Widget build(BuildContext context) => Center(child: Text("Task in progress: '${task.title}'", textAlign: TextAlign.center));
-}
-class TaskFinishedView extends StatelessWidget {
-  final Task task;
-  const TaskFinishedView({Key? key, required this.task}) : super(key: key);
-  @override
-  Widget build(BuildContext context) => Center(child: Text("Task finished: '${task.title}'! Awaiting your action.", textAlign: TextAlign.center));
-}
-class TaskCompletedView extends StatelessWidget {
-  final Task task;
-  const TaskCompletedView({Key? key, required this.task}) : super(key: key);
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(24.0),
-    child: Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.check_circle, size: 80, color: Colors.green[700]),
-          const SizedBox(height: 24),
-          const Text("Task Completed!", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-        ],
-      ),
-    ),
-  );
-}
-class TaskCancelledView extends StatelessWidget {
-  final Task task;
-  const TaskCancelledView({Key? key, required this.task}) : super(key: key);
+  const _TaskSummaryCard({required this.task});
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(24.0),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.cancel, size: 80, color: Colors.red[700]),
-            const SizedBox(height: 24),
-            const Text("Task Cancelled", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            Text("This task was cancelled by the ${task.cancelledBy ?? 'user'}.", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[600])),
-            if (task.cancellationReason != null && task.cancellationReason!.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text("Reason: ${task.cancellationReason}", textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
-            ]
-          ],
-        ),
-      ),
-    );
-  }
-}
-class CancellationDialog extends StatefulWidget {
-  final Task task;
-  const CancellationDialog({Key? key, required this.task}) : super(key: key);
-  @override
-  _CancellationDialogState createState() => _CancellationDialogState();
-}
-class _CancellationDialogState extends State<CancellationDialog> {
-  String? _selectedReason;
-  final _otherReasonController = TextEditingController();
-  final List<String> _reasons = ["Helper is not the right fit for the job", "Helper is late or unresponsive", "I made a mistake in the task details", "I no longer need this task done", "Other"];
-  bool _isSubmitting = false;
-  @override
-  void dispose() {
-    _otherReasonController.dispose();
-    super.dispose();
-  }
-  Future<void> _submitCancellation() async {
-    if (_selectedReason == null) return;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    setState(() => _isSubmitting = true);
-    try {
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      final currentUser = HelpifyUser.fromFirestore(userDoc);
-      if (currentUser.cancellationCount >= 5) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You have reached your cancellation limit."), backgroundColor: Colors.red));
-        if (mounted) Navigator.of(context).pop();
-        return;
-      }
-      String finalReason = _selectedReason!;
-      if (_selectedReason == "Other") {
-        finalReason = _otherReasonController.text.trim().isEmpty ? "Other" : _otherReasonController.text.trim();
-      }
-      final batch = FirebaseFirestore.instance.batch();
-      final taskRef = FirebaseFirestore.instance.collection('tasks').doc(widget.task.id);
-      batch.update(taskRef, {'status': 'cancelled', 'cancellationReason': finalReason, 'cancelledBy': 'poster'});
-      final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-      batch.update(userRef, {'cancellationCount': FieldValue.increment(1)});
-      await batch.commit();
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      print("Error cancelling task: $e");
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Failed to cancel task."), backgroundColor: Colors.red));
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text("Reason for Cancellation"),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ..._reasons.map((reason) => RadioListTile<String>(
-              title: Text(reason),
-              value: reason,
-              groupValue: _selectedReason,
-              onChanged: (value) => setState(() => _selectedReason = value),
-            )),
-            if (_selectedReason == "Other")
-              Padding(
-                padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 8.0),
-                child: TextField(
-                  controller: _otherReasonController,
-                  decoration: const InputDecoration(hintText: "Please specify your reason..."),
-                  autofocus: true,
-                ),
-              ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text("Back")),
-        ElevatedButton(
-          onPressed: (_selectedReason == null || _isSubmitting) ? null : _submitCancellation,
-          style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-          child: _isSubmitting ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text("Confirm Cancellation"),
-        )
-      ],
-    );
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(task.title, style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 8),
+              Text(task.description, style: Theme.of(context).textTheme.bodyMedium),
+              const Divider(height: 32),
+              _buildInfoRow(context, Icons.category_outlined, "Category", task.category),
+              const SizedBox(height: 12),
+              _buildInfoRow(context, Icons.account_balance_wallet_rounded, "Final Price", 'LKR ${NumberFormat("#,##0").format(task.finalAmount ?? task.budget)}')
+            ])));
   }
 }
 
+class _StatusInfoCard extends StatelessWidget {
+  final String title;
+  final String message;
+  final IconData? icon;
+  final Color? color;
+  const _StatusInfoCard({required this.title, required this.message, this.icon, this.color});
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+        color: (color ?? theme.primaryColor).withOpacity(0.05),
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Row(children: [
+              if (icon != null) ...[Icon(icon, size: 40, color: color ?? theme.primaryColor), const SizedBox(width: 20)],
+              Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(title, style: theme.textTheme.titleLarge?.copyWith(color: color ?? theme.primaryColor)),
+                    const SizedBox(height: 4),
+                    Text(message, style: theme.textTheme.bodyMedium)
+                  ]))
+            ])));
+  }
+}
+
+class _ActionCard extends StatelessWidget {
+  final String title;
+  final String message;
+  final String buttonText;
+  final VoidCallback onPressed;
+  const _ActionCard({required this.title, required this.message, required this.buttonText, required this.onPressed});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text(title, style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(message, style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: onPressed, style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)), child: Text(buttonText))
+            ])));
+  }
+}
+
+class _ConfirmationCodeCard extends StatelessWidget {
+  final String code;
+  const _ConfirmationCodeCard({required this.code});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+        color: Theme.of(context).primaryColor,
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(children: [
+              Text("Your Helper has arrived!", style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white)),
+              const SizedBox(height: 8),
+              Text("Show this code to your helper to confirm their arrival and start the task.", textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70)),
+              const SizedBox(height: 24),
+              Text(code, style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 12))
+            ])));
+  }
+}
+
+class _EnterCodeCard extends StatelessWidget {
+  final TextEditingController controller;
+  final bool isLoading;
+  final VoidCallback onSubmit;
+  const _EnterCodeCard({required this.controller, required this.isLoading, required this.onSubmit});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text("Confirm Your Arrival", style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text("Enter the 4-digit code from the poster's app to begin the task.", style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 20),
+              TextField(controller: controller, maxLength: 4, keyboardType: TextInputType.number, textAlign: TextAlign.center, style: const TextStyle(fontSize: 24, letterSpacing: 8, fontWeight: FontWeight.bold), decoration: const InputDecoration(counterText: "", hintText: "----")),
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: isLoading ? null : onSubmit, style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)), child: isLoading ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white)) : const Text("Verify Code & Start Task"))
+            ])));
+  }
+}
+
+class _CompleteTaskCard extends StatelessWidget {
+  final bool isLoading;
+  final XFile? imageFile;
+  final VoidCallback onPickImage;
+  final VoidCallback onComplete;
+  const _CompleteTaskCard({required this.isLoading, this.imageFile, required this.onPickImage, required this.onComplete});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text("Complete the Task", style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text("Upload a photo as proof of your work. This helps prevent disputes.", style: Theme.of(context).textTheme.bodyMedium),
+              const SizedBox(height: 20),
+              Container(height: 150, width: double.infinity, decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade300), borderRadius: BorderRadius.circular(12)), child: imageFile != null ? ClipRRect(borderRadius: BorderRadius.circular(11), child: Image.file(File(imageFile!.path), fit: BoxFit.cover)) : const Center(child: Text('No image selected.'))),
+              const SizedBox(height: 8),
+              TextButton.icon(onPressed: onPickImage, icon: const Icon(Icons.add_a_photo_outlined), label: const Text('Select Proof Photo')),
+              const SizedBox(height: 12),
+              ElevatedButton(onPressed: isLoading ? null : onComplete, style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)), child: isLoading ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white)) : const Text("Mark as Complete"))
+            ])));
+  }
+}
+
+class _ConfirmCompletionCard extends StatelessWidget {
+  final Task task;
+  final VoidCallback onConfirm;
+  const _ConfirmCompletionCard({required this.task, required this.onConfirm});
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+        child: Padding(
+            padding: const EdgeInsets.all(20.0),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text("Confirm Completion", style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text("Your helper has marked the task as complete. Please review their work and the proof photo below.", style: Theme.of(context).textTheme.bodyMedium),
+              if (task.proofImageUrl != null) ...[
+                const SizedBox(height: 20),
+                Text("Proof of Completion:", style: Theme.of(context).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                ClipRRect(borderRadius: BorderRadius.circular(12), child: Image.network(task.proofImageUrl!, height: 200, width: double.infinity, fit: BoxFit.cover, loadingBuilder: (context, child, progress) => progress == null ? child : const Center(child: CircularProgressIndicator())))
+              ],
+              const SizedBox(height: 20),
+              ElevatedButton(onPressed: onConfirm, style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)), child: const Text("Confirm & Proceed to Payment"))
+            ])));
+  }
+}
+
+Widget _buildInfoRow(BuildContext context, IconData icon, String label, String value) {
+  return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+    Icon(icon, color: Colors.grey[600], size: 20),
+    const SizedBox(width: 16),
+    Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 2),
+          Text(value, style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600))
+        ]))
+  ]);
+}

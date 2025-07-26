@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-import 'package:helpify/models/app_notification_model.dart';
-import 'package:helpify/services/notification_service.dart';
-import 'package:helpify/widgets/empty_state_widget.dart';
+import 'package:servana/models/app_notification_model.dart';
+import 'package:servana/services/notification_service.dart';
+import 'package:servana/widgets/empty_state_widget.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});

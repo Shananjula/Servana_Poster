@@ -4,14 +4,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:helpify/models/user_model.dart';
+import 'package:provider/provider.dart';
+import 'package:servana/models/user_model.dart';
 import 'package:intl/intl.dart';
+import 'package:servana/providers/user_provider.dart';
+import 'package:servana/services/firestore_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/task_model.dart';
-import '../models/offer_model.dart';
-import 'active_task_screen.dart';
-import 'helper_active_task_screen.dart';
 import 'helper_public_profile_screen.dart';
 
 
@@ -28,7 +28,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
   String? _distanceInKm;
   String? _estimatedTime;
   bool _isCalculating = true;
-  bool _isAccepting = false;
+  bool _isSubmitting = false;
 
   @override
   void initState() {
@@ -41,7 +41,6 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
   }
 
   Future<void> _calculateDistanceAndTime() async {
-    // ... (This function remains unchanged)
     try {
       if (widget.task.location == null) {
         if(mounted) setState(() => _isCalculating = false);
@@ -71,7 +70,6 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
   }
 
   Future<void> _launchMapsNavigation() async {
-    // ... (This function remains unchanged)
     if (widget.task.location == null) return;
     final lat = widget.task.location!.latitude;
     final lng = widget.task.location!.longitude;
@@ -83,118 +81,33 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     }
   }
 
-  Future<void> _acceptTaskInstantly() async {
-    // ... (This function remains unchanged)
-    final user = FirebaseAuth.instance.currentUser;
+  // --- MODIFIED: Uses the new FirestoreService ---
+  Future<void> _startNegotiation({required double offerAmount, String? message}) async {
+    final user = context.read<UserProvider>().user;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You must be logged in.')));
       return;
     }
 
-    setState(() => _isAccepting = true);
+    setState(() => _isSubmitting = true);
 
-    try {
-      final helperDocRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-      final taskDocRef = FirebaseFirestore.instance.collection('tasks').doc(widget.task.id);
+    await FirestoreService().initiateOfferAndNavigateToChat(
+      context: context,
+      task: widget.task,
+      helper: user,
+      offerAmount: offerAmount,
+      initialMessage: message,
+    );
 
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final helperSnapshot = await transaction.get(helperDocRef);
-        final taskSnapshot = await transaction.get(taskDocRef);
-
-        if (!helperSnapshot.exists) throw Exception('Your user profile could not be found.');
-        if (!taskSnapshot.exists || taskSnapshot.data()?['status'] != 'open') throw Exception('This task is no longer available.');
-
-        final helper = HelpifyUser.fromFirestore(helperSnapshot);
-        final task = Task.fromFirestore(taskSnapshot);
-
-        final settingsDoc = await transaction.get(FirebaseFirestore.instance.collection("platform_settings").doc("config"));
-        final settingsData = settingsDoc.data() ?? {};
-        final freeTasksLimit = (settingsData['defaultFreeTasksForHelper'] as int? ?? 5) + helper.bonusTasksAvailable;
-        final bool hasFreeTasks = helper.commissionFreeTasksCompleted < freeTasksLimit;
-
-        double commissionAmount = 0;
-        if (!task.isCommissionFree && !hasFreeTasks) {
-          commissionAmount = task.budget * (settingsData['helperCommissionRate'] as double? ?? 0.075);
-        }
-
-        final totalBalance = helper.coinWalletBalance + helper.creditCoinBalance;
-        if (totalBalance < commissionAmount) {
-          throw Exception('Insufficient coins. Please top up your wallet to accept this task.');
-        }
-
-        final confirm = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => AlertDialog(
-            title: const Text('Confirm Acceptance'),
-            content: Text(commissionAmount > 0
-                ? 'A commission of ${commissionAmount.toStringAsFixed(2)} Coins will be deducted. Proceed?'
-                : 'You are accepting this task for LKR ${NumberFormat("#,##0").format(widget.task.budget)}. Proceed?'),
-            actions: [
-              TextButton(child: const Text('Cancel'), onPressed: () => Navigator.of(ctx).pop(false)),
-              ElevatedButton(child: const Text('Accept'), onPressed: () => Navigator.of(ctx).pop(true)),
-            ],
-          ),
-        );
-
-        if (confirm != true) throw Exception('Acceptance cancelled by user.');
-
-        double newCoinBalance = helper.coinWalletBalance;
-        double newCreditBalance = helper.creditCoinBalance;
-        if (commissionAmount > 0) {
-          if (newCoinBalance >= commissionAmount) {
-            newCoinBalance -= commissionAmount;
-          } else {
-            final remainingCommission = commissionAmount - newCoinBalance;
-            newCoinBalance = 0;
-            newCreditBalance -= remainingCommission;
-          }
-        }
-
-        int newFreeTasksCompleted = helper.commissionFreeTasksCompleted;
-        if (hasFreeTasks) {
-          newFreeTasksCompleted++;
-        }
-
-        transaction.update(helperDocRef, {
-          'coinWalletBalance': newCoinBalance,
-          'creditCoinBalance': newCreditBalance,
-          'commissionFreeTasksCompleted': newFreeTasksCompleted,
-        });
-
-        transaction.update(taskDocRef, {
-          'status': 'assigned',
-          'assignedHelperId': helper.id,
-          'assignedHelperName': helper.displayName ?? 'Helpify Helper',
-          'assignedHelperAvatarUrl': helper.photoURL ?? '',
-          'finalAmount': task.budget,
-          'assignmentTimestamp': FieldValue.serverTimestamp(),
-        });
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Task accepted! You can now start.'), backgroundColor: Colors.green),
-        );
-        final updatedTaskDoc = await taskDocRef.get();
-        final updatedTask = Task.fromFirestore(updatedTaskDoc);
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (ctx) => HelperActiveTaskScreen(task: updatedTask)),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
-      }
-    } finally {
-      if (mounted) setState(() => _isAccepting = false);
+    if (mounted) {
+      setState(() => _isSubmitting = false);
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
     final taskLatLng = LatLng(widget.task.location?.latitude ?? 6.9271, widget.task.location?.longitude ?? 79.8612);
-    // MODIFIED: Create a combined category string to include sub-category
     final String fullCategory = '${widget.task.category}${widget.task.subCategory != null ? " > ${widget.task.subCategory}" : ""}';
     final bool isOnlineTask = widget.task.taskType == 'online';
 
@@ -205,13 +118,12 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
             expandedHeight: 250.0,
             pinned: true,
             flexibleSpace: FlexibleSpaceBar(
-              // MODIFIED: Use the new fullCategory string
               title: Text(
                   fullCategory,
                   style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, shadows: [Shadow(blurRadius: 2, color: Colors.black45)])
               ),
               background: isOnlineTask
-                  ? _buildOnlineTaskHeader() // MODIFIED: Show image for online tasks
+                  ? _buildOnlineTaskHeader()
                   : GoogleMap(
                 mapType: MapType.normal,
                 initialCameraPosition: CameraPosition(target: taskLatLng, zoom: 14),
@@ -233,7 +145,6 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
                     const SizedBox(height: 16),
                     _buildPosterInfoCard(context),
                     const SizedBox(height: 24),
-                    // MODIFIED: Conditionally show location or online task banner
                     if (!isOnlineTask)
                       _buildLocationDetailsSection(context)
                     else
@@ -257,9 +168,9 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
 
   Widget _buildOnlineTaskHeader() {
     return Image.network(
-      widget.task.imageUrl ?? 'https://placehold.co/600x400/1e40af/white?text=Online+Task', // Placeholder
+      widget.task.imageUrl ?? 'https://placehold.co/600x400/1e40af/white?text=Online+Task',
       fit: BoxFit.cover,
-      color: Colors.black.withOpacity(0.4), // Darken the image to make text readable
+      color: Colors.black.withOpacity(0.4),
       colorBlendMode: BlendMode.darken,
       errorBuilder: (context, error, stackTrace) {
         return Container(
@@ -291,8 +202,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  // All other _build methods remain unchanged from your original file...
-  Widget _buildPaymentInfoCard(BuildContext context, String paymentMethod) { /* Unchanged */
+  Widget _buildPaymentInfoCard(BuildContext context, String paymentMethod) {
     final isCash = paymentMethod == 'cash';
     final theme = Theme.of(context);
     final icon = isCash ? Icons.money_outlined : Icons.shield_outlined;
@@ -331,7 +241,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  Widget _buildLocationDetailsSection(BuildContext context) { /* Unchanged */
+  Widget _buildLocationDetailsSection(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -361,7 +271,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  Widget _buildStatChip(BuildContext context, IconData icon, String value, String label) { /* Unchanged */
+  Widget _buildStatChip(BuildContext context, IconData icon, String value, String label) {
     return Column(
       children: [
         Icon(icon, color: Theme.of(context).primaryColor, size: 28),
@@ -372,11 +282,11 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  Widget _buildSectionHeader(String title) { /* Unchanged */
+  Widget _buildSectionHeader(String title) {
     return Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black));
   }
 
-  Widget _buildPosterInfoCard(BuildContext context) { /* Unchanged */
+  Widget _buildPosterInfoCard(BuildContext context) {
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -414,7 +324,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  Widget _buildBottomBar(BuildContext context) { /* Unchanged */
+  Widget _buildBottomBar(BuildContext context) {
     final isMyTask = FirebaseAuth.instance.currentUser?.uid == widget.task.posterId;
     if (widget.task.status != 'open' || isMyTask) {
       return const SizedBox.shrink();
@@ -422,7 +332,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       decoration: BoxDecoration(color: Colors.white, boxShadow: [BoxShadow(color: Colors.grey.withOpacity(0.2), spreadRadius: 1, blurRadius: 8)]),
-      child: _isAccepting
+      child: _isSubmitting
           ? const Center(child: CircularProgressIndicator())
           : Row(
         children: [
@@ -433,7 +343,11 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
                   context: context,
                   isScrollControlled: true,
                   shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-                  builder: (context) => _MakeOfferView(task: widget.task),
+                  builder: (context) => _MakeOfferView(
+                      task: widget.task,
+                      onSubmit: (double amount, String? message) {
+                        _startNegotiation(offerAmount: amount, message: message);
+                      }),
                 );
               },
               style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
@@ -443,7 +357,9 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
           const SizedBox(width: 12),
           Expanded(
             child: ElevatedButton(
-              onPressed: _acceptTaskInstantly,
+              onPressed: () {
+                _startNegotiation(offerAmount: widget.task.budget);
+              },
               style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
               child: Text('Accept for LKR ${NumberFormat("#,##0").format(widget.task.budget)}'),
             ),
@@ -454,59 +370,38 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
   }
 }
 
-// _MakeOfferView widget remains unchanged
 class _MakeOfferView extends StatefulWidget {
   final Task task;
-  const _MakeOfferView({Key? key, required this.task}) : super(key: key);
+  final Function(double amount, String? message) onSubmit;
+
+  const _MakeOfferView({Key? key, required this.task, required this.onSubmit}) : super(key: key);
   @override
   State<_MakeOfferView> createState() => __MakeOfferViewState();
 }
+
 class __MakeOfferViewState extends State<_MakeOfferView> {
   final _formKey = GlobalKey<FormState>();
   final _amountController = TextEditingController();
   final _messageController = TextEditingController();
-  bool _isLoading = false;
+
   @override
   void dispose() {
     _amountController.dispose();
     _messageController.dispose();
     super.dispose();
   }
-  Future<void> _submitOffer() async { /* Unchanged */
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isLoading = true);
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('You must be logged in to make an offer.')));
-      setState(() => _isLoading = false);
-      return;
-    }
-    try {
-      final helperDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      if (!helperDoc.exists) throw Exception('Could not find your user profile.');
-      final helperData = HelpifyUser.fromFirestore(helperDoc);
 
-      final offersCollection = FirebaseFirestore.instance.collection('tasks').doc(widget.task.id).collection('offers');
-      await offersCollection.add({
-        'amount': double.tryParse(_amountController.text) ?? 0.0,
-        'message': _messageController.text,
-        'helperId': user.uid,
-        'helperName': user.displayName ?? 'Anonymous Helper',
-        'helperAvatarUrl': user.photoURL ?? '',
-        'helperTrustScore': helperData.averageRating.round(),
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Your offer has been sent!'), backgroundColor: Colors.green));
-    } catch (e) {
-      print("Failed to submit offer: $e");
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to send offer. Please try again.'), backgroundColor: Colors.red));
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    Navigator.pop(context);
+    widget.onSubmit(
+      double.parse(_amountController.text),
+      _messageController.text.trim().isNotEmpty ? _messageController.text.trim() : null,
+    );
   }
+
   @override
-  Widget build(BuildContext context) { /* Unchanged */
+  Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom, left: 20, right: 20, top: 20),
       child: Form(
@@ -537,12 +432,12 @@ class __MakeOfferViewState extends State<_MakeOfferView> {
             ),
             const SizedBox(height: 24),
             ElevatedButton(
-              onPressed: _isLoading ? null : _submitOffer,
+              onPressed: _submit,
               style: ElevatedButton.styleFrom(
                 minimumSize: const Size(double.infinity, 50),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ).copyWith(backgroundColor: MaterialStateProperty.all(Theme.of(context).primaryColor)),
-              child: _isLoading ? const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white)) : const Text('Submit Offer', style: TextStyle(fontSize: 18, color: Colors.white)),
+              child: const Text('Submit Offer & Chat', style: TextStyle(fontSize: 18, color: Colors.white)),
             ),
             const SizedBox(height: 20),
           ],

@@ -4,17 +4,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:servana/models/user_model.dart';
 
-import 'package:helpify/providers/user_provider.dart';
-import 'package:helpify/screens/filter_screen.dart';
-import 'package:helpify/screens/verification_center_screen.dart';
+import 'package:servana/providers/user_provider.dart';
+import 'package:servana/screens/filter_screen.dart';
+import 'package:servana/screens/verification_status_screen.dart';
 import '../models/task_model.dart';
-import '../models/service_model.dart';
 import 'task_details_screen.dart';
-import 'service_booking_screen.dart';
+import 'profile_screen.dart';
 import '../widgets/empty_state_widget.dart';
 
-// Enum to manage the current view state
 enum ViewMode { list, map }
 
 class BrowseScreen extends StatefulWidget {
@@ -27,7 +28,7 @@ class BrowseScreen extends StatefulWidget {
 
 class _BrowseScreenState extends State<BrowseScreen> {
   Map<String, dynamic> _filters = {};
-  ViewMode _viewMode = ViewMode.list; // Default to list view
+  ViewMode _viewMode = ViewMode.list;
 
   @override
   void initState() {
@@ -62,56 +63,49 @@ class _BrowseScreenState extends State<BrowseScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final userProvider = Provider.of<UserProvider>(context);
+    final userProvider = context.watch<UserProvider>();
+    final activeMode = userProvider.activeMode;
     final isVerified = userProvider.isVerifiedHelper;
-    final isHelper = userProvider.user?.isHelper ?? false;
+    final isRegisteredHelper = userProvider.user?.isHelper ?? false;
 
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text("Browse Marketplace"),
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.filter_list_rounded),
-              onPressed: _openFilterScreen,
-              tooltip: 'Filter',
-            ),
-            // --- NEW: View Mode Toggle ---
-            SegmentedButton<ViewMode>(
-              segments: const [
-                ButtonSegment(value: ViewMode.list, icon: Icon(Icons.list_rounded, size: 20)),
-                ButtonSegment(value: ViewMode.map, icon: Icon(Icons.map_outlined, size: 20)),
-              ],
-              selected: {_viewMode},
-              onSelectionChanged: (Set<ViewMode> newSelection) {
-                setState(() => _viewMode = newSelection.first);
-              },
-              style: SegmentedButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.surface,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
-          bottom: const TabBar(
-            tabs: [Tab(text: 'TASKS'), Tab(text: 'SERVICES')],
+    final bool showHelperUI = activeMode == AppMode.helper;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(showHelperUI ? "Find Work" : "Find Help"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.filter_list_rounded),
+            onPressed: _openFilterScreen,
+            tooltip: 'Filter',
           ),
-        ),
-        body: TabBarView(
-          children: [
-            (isHelper && !isVerified)
-                ? const VerificationPrompt()
-                : TasksView(filters: _filters, viewMode: _viewMode),
-            ServicesView(filters: _filters, viewMode: _viewMode),
-          ],
-        ),
+          SegmentedButton<ViewMode>(
+            segments: const [
+              ButtonSegment(value: ViewMode.list, icon: Icon(Icons.view_list_rounded, size: 20)),
+              ButtonSegment(value: ViewMode.map, icon: Icon(Icons.map_outlined, size: 20)),
+            ],
+            selected: {_viewMode},
+            onSelectionChanged: (Set<ViewMode> newSelection) {
+              setState(() => _viewMode = newSelection.first);
+            },
+            style: SegmentedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.surface,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
       ),
+      body: showHelperUI
+          ? (isRegisteredHelper && !isVerified)
+          ? const VerificationPrompt()
+          : TasksView(filters: _filters, viewMode: _viewMode)
+          : HelpersView(filters: _filters, viewMode: _viewMode), // Updated to HelpersView
     );
   }
 }
 
-// --- TASKS VIEW (UPGRADED FOR MAP VIEW) ---
+// --- TASKS VIEW (For Helpers to find work) ---
 class TasksView extends StatelessWidget {
   final Map<String, dynamic> filters;
   final ViewMode viewMode;
@@ -120,7 +114,6 @@ class TasksView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Query query = FirebaseFirestore.instance.collection('tasks').where('status', isEqualTo: 'open');
-
     filters.forEach((key, value) {
       if (value != null && value != 'All' && value.toString().isNotEmpty) {
         if (key == 'rate_min') {
@@ -132,20 +125,19 @@ class TasksView extends StatelessWidget {
         }
       }
     });
-
     query = query.orderBy('timestamp', descending: true);
 
     return StreamBuilder<QuerySnapshot>(
       stream: query.snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return _buildSkeletonListView(_TaskCardSkeleton());
         }
         if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const EmptyStateWidget(icon: Icons.search_off_rounded, title: "No Tasks Found", message: "Try adjusting your filters.");
+          return const EmptyStateWidget(icon: Icons.search_off_rounded, title: "No Tasks Found", message: "Try adjusting your filters or check back later.");
         }
 
         final tasks = snapshot.data!.docs.map((doc) => Task.fromFirestore(doc as DocumentSnapshot<Map<String, dynamic>>)).toList();
@@ -166,7 +158,9 @@ class TasksView extends StatelessWidget {
       key: const ValueKey('list'),
       padding: const EdgeInsets.all(16.0),
       itemCount: tasks.length,
-      itemBuilder: (context, index) => TaskCard(task: tasks[index]),
+      itemBuilder: (context, index) => TaskCard(task: tasks[index]).animate()
+          .fadeIn(duration: 500.ms, delay: (100 * index).ms, curve: Curves.easeOut)
+          .slideY(begin: 0.2, curve: Curves.easeOut),
     );
   }
 
@@ -187,70 +181,161 @@ class TasksView extends StatelessWidget {
 
     return GoogleMap(
       key: const ValueKey('map'),
-      initialCameraPosition: const CameraPosition(
-        target: LatLng(6.9271, 79.8612), // Default to Colombo
-        zoom: 12,
-      ),
+      initialCameraPosition: const CameraPosition(target: LatLng(6.9271, 79.8612), zoom: 12),
       markers: markers,
+      myLocationEnabled: true,
+      myLocationButtonEnabled: true,
     );
   }
 }
 
-// --- SERVICES VIEW (UPGRADED FOR MAP VIEW) ---
-class ServicesView extends StatelessWidget {
+// --- HELPERS VIEW (For Users to find help) ---
+class HelpersView extends StatefulWidget {
   final Map<String, dynamic> filters;
   final ViewMode viewMode;
-  const ServicesView({super.key, required this.filters, required this.viewMode});
+  const HelpersView({super.key, required this.filters, required this.viewMode});
 
   @override
-  Widget build(BuildContext context) {
-    Query query = FirebaseFirestore.instance.collection('services').where('isActive', isEqualTo: true);
+  State<HelpersView> createState() => _HelpersViewState();
+}
 
-    filters.forEach((key, value) {
+class _HelpersViewState extends State<HelpersView> {
+  final Completer<GoogleMapController> _mapController = Completer();
+  Stream<QuerySnapshot>? _helpersStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _buildQuery();
+    _centerMapOnUserLocation();
+  }
+
+  @override
+  void didUpdateWidget(covariant HelpersView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filters != widget.filters) {
+      _buildQuery();
+    }
+  }
+
+  void _buildQuery() {
+    Query query = FirebaseFirestore.instance
+        .collection('users')
+        .where('isHelper', isEqualTo: true)
+        .where('verificationStatus', isEqualTo: 'verified');
+
+    widget.filters.forEach((key, value) {
       if (value != null && value != 'All' && value.toString().isNotEmpty) {
         if (key == 'category') {
-          query = query.where(key, isEqualTo: value);
+          query = query.where('skills', arrayContains: value);
+        } else if (key == 'isVerified' && value == true) {
+          // This is already part of the base query, but good for explicit filtering
+        } else if (key == 'minRating') {
+          query = query.where('averageRating', isGreaterThanOrEqualTo: value);
         }
+        // Location filtering would be more complex (geoquery) and is omitted for simplicity here
+        // but could be added with a library like geoflutterfire.
       }
     });
 
-    // NOTE: For map view to work with services, your 'services' collection
-    // documents MUST have a 'location' GeoPoint field.
-    query = query.orderBy('category');
+    setState(() {
+      _helpersStream = query.snapshots();
+    });
+  }
 
+  Future<void> _centerMapOnUserLocation() async {
+    try {
+      final position = await Geolocator.getCurrentPosition();
+      final controller = await _mapController.future;
+      controller.animateCamera(CameraUpdate.newCameraPosition(
+        CameraPosition(target: LatLng(position.latitude, position.longitude), zoom: 12),
+      ));
+    } catch (e) {
+      print("Could not get user location: $e");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot>(
-      stream: query.snapshots(),
+      stream: _helpersStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return _buildSkeletonListView(_HelperCardSkeleton());
+        }
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const EmptyStateWidget(icon: Icons.design_services_outlined, title: "No Services Found", message: "Try adjusting your filters.");
+          return const EmptyStateWidget(icon: Icons.person_search_outlined, title: "No Helpers Found", message: "Try adjusting your filters or expanding your search area.");
         }
 
-        final services = snapshot.data!.docs.map((doc) => Service.fromFirestore(doc as DocumentSnapshot<Map<String, dynamic>>, null)).toList();
-        // final physicalServices = services.where((service) => service.location != null).toList();
+        final helpers = snapshot.data!.docs.map((doc) => HelpifyUser.fromFirestore(doc as DocumentSnapshot<Map<String, dynamic>>)).toList();
+        final helpersWithLocation = helpers.where((h) => h.workLocation != null).toList();
 
         return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          // For now, only showing list view for services. Map view can be added similarly.
-          child: _buildListView(services),
+          duration: const Duration(milliseconds: 400),
+          transitionBuilder: (child, animation) => FadeTransition(opacity: animation, child: child),
+          child: (widget.viewMode == ViewMode.list || helpersWithLocation.isEmpty)
+              ? _buildListView(helpers)
+              : _buildMapView(context, helpersWithLocation),
         );
       },
     );
   }
 
-  Widget _buildListView(List<Service> services) {
+  Widget _buildListView(List<HelpifyUser> helpers) {
     return ListView.builder(
-      key: const ValueKey('service_list'),
+      key: const ValueKey('helper_list'),
       padding: const EdgeInsets.all(16.0),
-      itemCount: services.length,
-      itemBuilder: (context, index) => ServiceDiscoveryCard(service: services[index]),
+      itemCount: helpers.length,
+      itemBuilder: (context, index) => HelperCard(helper: helpers[index]).animate()
+          .fadeIn(duration: 500.ms, delay: (100 * index).ms, curve: Curves.easeOut)
+          .slideY(begin: 0.2, curve: Curves.easeOut),
+    );
+  }
+
+  Widget _buildMapView(BuildContext context, List<HelpifyUser> helpers) {
+    final Set<Marker> markers = helpers.map((helper) {
+      return Marker(
+        markerId: MarkerId(helper.id),
+        position: LatLng(helper.workLocation!.latitude, helper.workLocation!.longitude),
+        icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+        infoWindow: InfoWindow(
+          title: helper.displayName ?? 'Servana Helper',
+          snippet: 'Rating: ${helper.averageRating.toStringAsFixed(1)} ★ (${helper.ratingCount})',
+          onTap: () {
+            Navigator.push(context, MaterialPageRoute(builder: (context) => ProfileScreen(userId: helper.id)));
+          },
+        ),
+      );
+    }).toSet();
+
+    return GoogleMap(
+      key: const ValueKey('helper_map'),
+      initialCameraPosition: const CameraPosition(target: LatLng(6.9271, 79.8612), zoom: 12),
+      onMapCreated: (controller) {
+        if (!_mapController.isCompleted) {
+          _mapController.complete(controller);
+        }
+      },
+      markers: markers,
+      myLocationEnabled: true,
+      myLocationButtonEnabled: true,
     );
   }
 }
 
-// --- WIDGET SHOWN TO UNVERIFIED HELPERS ---
+// --- SHARED WIDGETS ---
+
+Widget _buildSkeletonListView(Widget skeletonCard) {
+  return ListView.builder(
+    padding: const EdgeInsets.all(16.0),
+    itemCount: 5,
+    itemBuilder: (context, index) => skeletonCard,
+  );
+}
+
 class VerificationPrompt extends StatelessWidget {
   const VerificationPrompt({super.key});
 
@@ -265,7 +350,7 @@ class VerificationPrompt extends StatelessWidget {
         label: const Text('Start Verification'),
         onPressed: () {
           Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => const VerificationCenterScreen(),
+            builder: (_) => const VerificationStatusScreen(), // Direct to status/re-upload screen
           ));
         },
       ),
@@ -273,7 +358,6 @@ class VerificationPrompt extends StatelessWidget {
   }
 }
 
-// --- TASK CARD WIDGET (FULL IMPLEMENTATION FROM YOUR FILE) ---
 class TaskCard extends StatelessWidget {
   final Task task;
   const TaskCard({Key? key, required this.task}) : super(key: key);
@@ -343,45 +427,152 @@ class TaskCard extends StatelessWidget {
   }
 }
 
-// --- SERVICE CARD WIDGET (FULL IMPLEMENTATION FROM YOUR FILE) ---
-class ServiceDiscoveryCard extends StatelessWidget {
-  final Service service;
-  const ServiceDiscoveryCard({Key? key, required this.service}) : super(key: key);
+// --- NEW HELPER CARD WIDGET ---
+class HelperCard extends StatelessWidget {
+  final HelpifyUser helper;
+  const HelperCard({Key? key, required this.helper}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      elevation: 2.0,
+      margin: const EdgeInsets.only(bottom: 16.0),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProfileScreen(userId: helper.id))),
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 30,
+                    backgroundImage: helper.photoURL != null ? NetworkImage(helper.photoURL!) : null,
+                    child: helper.photoURL == null ? const Icon(Icons.person, size: 30) : null,
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(helper.displayName ?? 'Servana Helper', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(Icons.star, color: Colors.amber, size: 16),
+                            const SizedBox(width: 4),
+                            Text('${helper.averageRating.toStringAsFixed(1)} (${helper.ratingCount} reviews)', style: theme.textTheme.bodyMedium),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Icon(Icons.arrow_forward_ios_rounded, color: Colors.grey, size: 16),
+                ],
+              ),
+              if (helper.skills.isNotEmpty) ...[
+                const Divider(height: 24),
+                Wrap(
+                  spacing: 8.0,
+                  runSpacing: 4.0,
+                  children: helper.skills.take(3).map((skill) => Chip(
+                    label: Text(skill),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    labelStyle: const TextStyle(fontSize: 12),
+                    backgroundColor: theme.colorScheme.secondary.withOpacity(0.1),
+                    side: BorderSide.none,
+                  )).toList(),
+                )
+              ]
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TaskCardSkeleton extends StatelessWidget {
+  const _TaskCardSkeleton();
+
+  Widget _buildPlaceholder({double? width, double height = 16}) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return Card(
-      elevation: 2,
-      margin: const EdgeInsets.only(bottom: 16),
+      elevation: 2.0,
+      margin: const EdgeInsets.only(bottom: 16.0),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(service.title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text('${service.category} Service', style: TextStyle(fontSize: 14, color: Colors.grey[600])),
-            const Divider(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('LKR ${service.rate.toStringAsFixed(0)}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.teal)),
-                Text(service.rateType, style: const TextStyle(fontSize: 16, color: Colors.black54)),
+                _buildPlaceholder(width: 120, height: 24),
+                _buildPlaceholder(width: 80, height: 24),
               ],
             ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.push(context, MaterialPageRoute(builder: (context) => ServiceBookingScreen(service: service)));
-              },
-              icon: const Icon(Icons.calendar_today_outlined, size: 18),
-              label: const Text('Book Now'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 44),
-                backgroundColor: Colors.teal.withOpacity(0.9),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            const SizedBox(height: 12),
+            _buildPlaceholder(height: 28),
+            const SizedBox(height: 8),
+            _buildPlaceholder(width: 200),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- NEW SKELETON FOR HELPER CARD ---
+class _HelperCardSkeleton extends StatelessWidget {
+  const _HelperCardSkeleton();
+
+  Widget _buildPlaceholder({double? width, double height = 16}) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 2.0,
+      margin: const EdgeInsets.only(bottom: 16.0),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          children: [
+            CircleAvatar(radius: 30, backgroundColor: Colors.grey.shade200),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildPlaceholder(width: 150, height: 20),
+                  const SizedBox(height: 8),
+                  _buildPlaceholder(width: 100),
+                ],
               ),
             ),
           ],

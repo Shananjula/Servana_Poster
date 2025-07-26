@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:helpify/models/user_model.dart';
-import 'package:helpify/screens/top_up_screen.dart'; // Import the new screen
+import 'package:servana/models/user_model.dart';
+import 'package:servana/screens/top_up_screen.dart'; // Import the new screen
 import 'package:intl/intl.dart';
 
 class WalletScreen extends StatelessWidget {

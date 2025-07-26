@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:helpify/services/ai_service.dart';
+// import 'package:servana/services/ai_service.dart'; // Assuming you have this service
 
 class FilterScreen extends StatefulWidget {
   final ScrollController scrollController;
+  // We keep initialFilters in the constructor in case you want to change back, but we won't use it.
   final Map<String, dynamic> initialFilters;
 
   const FilterScreen({super.key, required this.scrollController, required this.initialFilters});
@@ -16,8 +17,7 @@ class _FilterScreenState extends State<FilterScreen> {
   final _aiSearchController = TextEditingController();
   bool _isAiProcessing = false;
 
-  // Define available categories
-  final List<String> _categories = ['All', 'Home & Garden', 'Digital & Online', 'Education', 'Other'];
+  late List<String> _categories;
 
   // State for sliders and switches
   RangeValues _rateRange = const RangeValues(0, 50000);
@@ -26,13 +26,18 @@ class _FilterScreenState extends State<FilterScreen> {
   @override
   void initState() {
     super.initState();
-    _currentFilters = Map.from(widget.initialFilters);
-    // Initialize UI state from the passed filters
-    _rateRange = RangeValues(
-      (_currentFilters['rate_min'] as num? ?? 0).toDouble(),
-      (_currentFilters['rate_max'] as num? ?? 50000).toDouble(),
-    );
-    _isVerifiedOnly = _currentFilters['isVerified'] ?? false;
+
+    // --- THIS IS THE FIX ---
+    // We no longer load the previous filters. We start fresh every time.
+    _currentFilters = {};
+
+    // Initialize the default categories list. This remains the same.
+    _categories = ['All', 'Home & Garden', 'Digital & Online', 'Education', 'Other'];
+
+    // Initialize UI state to default values, ignoring any previous state.
+    _rateRange = const RangeValues(0, 50000);
+    _isVerifiedOnly = false;
+    // --- END OF FIX ---
   }
 
   void _handleAiSearch() async {
@@ -42,13 +47,19 @@ class _FilterScreenState extends State<FilterScreen> {
     // final parsedFilters = await AiService.parseFilterFromText(_aiSearchController.text);
     // This is a mock response for demonstration. The real AiService would provide this.
     final parsedFilters = {
-      "category": "Plumbing",
+      "category": "Plumbing", // Example AI-parsed category
       "isVerified": true,
       "rate_max": 10000,
     };
 
     if (mounted) {
       setState(() {
+        // Add the new category from the AI to the list if it's not already there
+        final newCategory = parsedFilters['category'] as String?;
+        if (newCategory != null && !_categories.contains(newCategory)) {
+          _categories.add(newCategory);
+        }
+
         _currentFilters.addAll(parsedFilters);
         // Update UI elements based on AI response
         _isVerifiedOnly = _currentFilters['isVerified'] ?? _isVerifiedOnly;
@@ -76,6 +87,8 @@ class _FilterScreenState extends State<FilterScreen> {
       _aiSearchController.clear();
       _rateRange = const RangeValues(0, 50000);
       _isVerifiedOnly = false;
+      // Reset categories to the default list
+      _categories = ['All', 'Home & Garden', 'Digital & Online', 'Education', 'Other'];
     });
   }
 
@@ -116,7 +129,8 @@ class _FilterScreenState extends State<FilterScreen> {
                 _buildSectionHeader("Category", theme),
                 DropdownButtonFormField<String>(
                   value: _currentFilters['category'] ?? 'All',
-                  items: _categories.map((cat) => DropdownMenuItem(value: cat, child: Text(cat))).toList(),
+                  // Using .toSet().toList() is a great way to ensure the list is unique
+                  items: _categories.toSet().toList().map((cat) => DropdownMenuItem(value: cat, child: Text(cat))).toList(),
                   onChanged: (value) {
                     setState(() => _currentFilters['category'] = value);
                   },

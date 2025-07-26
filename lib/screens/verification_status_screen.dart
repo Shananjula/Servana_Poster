@@ -1,10 +1,9 @@
-// lib/screens/verification_status_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:helpify/providers/user_provider.dart';
-import 'package:helpify/widgets/empty_state_widget.dart';
-import 'package:helpify/screens/verification_center_screen.dart'; // To navigate to the upload screen
+import 'package:servana/providers/user_provider.dart';
+import 'package:servana/screens/home_screen.dart'; // <-- IMPORT HOME SCREEN
+import 'package:servana/widgets/empty_state_widget.dart';
+import 'package:servana/screens/service_selection_screen.dart';
 
 class VerificationStatusScreen extends StatelessWidget {
   const VerificationStatusScreen({super.key});
@@ -32,10 +31,26 @@ class VerificationStatusScreen extends StatelessWidget {
   Widget _buildContentForStatus(BuildContext context, String status, ThemeData theme) {
     switch (status) {
       case 'verified':
-        return const EmptyStateWidget(
+      // --- THIS IS THE PRIMARY CHANGE ---
+      // When verified, show a success message and a button to proceed.
+        return EmptyStateWidget(
           icon: Icons.verified_user,
           title: "You're Verified!",
-          message: "Congratulations, you are a trusted member of the Helpify community.",
+          message: "Congratulations, you are a trusted member of the Servana community.",
+          actionButton: ElevatedButton.icon(
+            icon: const Icon(Icons.dashboard_customize_outlined),
+            label: const Text('Go to Helper Dashboard'),
+            onPressed: () {
+              // 1. Set the app mode to Helper
+              context.read<UserProvider>().setMode(AppMode.helper);
+
+              // 2. Navigate to the home screen and remove all previous routes
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const HomeScreen()),
+                    (Route<dynamic> route) => false,
+              );
+            },
+          ),
         );
       case 'pending':
         return const EmptyStateWidget(
@@ -54,7 +69,7 @@ class VerificationStatusScreen extends StatelessWidget {
             style: ElevatedButton.styleFrom(backgroundColor: theme.colorScheme.error),
             onPressed: () {
               Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const VerificationCenterScreen(),
+                builder: (_) => const ServiceSelectionScreen(),
               ));
             },
           ),
@@ -70,7 +85,7 @@ class VerificationStatusScreen extends StatelessWidget {
             label: const Text('Start Verification Process'),
             onPressed: () {
               Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const VerificationCenterScreen(),
+                builder: (_) => const ServiceSelectionScreen(),
               ));
             },
           ),

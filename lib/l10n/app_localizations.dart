@@ -6,6 +6,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:intl/intl.dart' as intl;
 
 import 'app_localizations_en.dart';
+import 'app_localizations_si.dart';
+import 'app_localizations_ta.dart';
 
 // ignore_for_file: type=lint
 
@@ -92,12 +94,22 @@ abstract class AppLocalizations {
   ];
 
   /// A list of this localizations delegate's supported locales.
-  static const List<Locale> supportedLocales = <Locale>[Locale('en')];
+  static const List<Locale> supportedLocales = <Locale>[
+    Locale('en'),
+    Locale('si'),
+    Locale('ta')
+  ];
+
+  /// No description provided for @settingsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'App Settings'**
+  String get settingsTitle;
 
   /// The title of the application
   ///
   /// In en, this message translates to:
-  /// **'Helpify'**
+  /// **'Servana'**
   String get appTitle;
 
   /// No description provided for @home.
@@ -115,7 +127,7 @@ abstract class AppLocalizations {
   /// A welcome message shown to the user
   ///
   /// In en, this message translates to:
-  /// **'Welcome to Helpify!'**
+  /// **'Welcome to Servana!'**
   String get welcomeMessage;
 }
 
@@ -130,7 +142,7 @@ class _AppLocalizationsDelegate
 
   @override
   bool isSupported(Locale locale) =>
-      <String>['en'].contains(locale.languageCode);
+      <String>['en', 'si', 'ta'].contains(locale.languageCode);
 
   @override
   bool shouldReload(_AppLocalizationsDelegate old) => false;
@@ -141,6 +153,10 @@ AppLocalizations lookupAppLocalizations(Locale locale) {
   switch (locale.languageCode) {
     case 'en':
       return AppLocalizationsEn();
+    case 'si':
+      return AppLocalizationsSi();
+    case 'ta':
+      return AppLocalizationsTa();
   }
 
   throw FlutterError(

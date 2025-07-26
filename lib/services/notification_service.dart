@@ -3,16 +3,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:helpify/models/chat_channel_model.dart';
-import 'package:helpify/models/task_model.dart';
-import 'package:helpify/screens/conversation_screen.dart';
-import 'package:helpify/screens/task_details_screen.dart';
-import 'package:helpify/screens/active_task_screen.dart';
-import 'package:helpify/screens/verification_center_screen.dart';
-import 'package:helpify/screens/skill_quests_screen.dart';
+import 'package:servana/models/chat_channel_model.dart';
+import 'package:servana/models/task_model.dart';
+import 'package:servana/screens/conversation_screen.dart';
+import 'package:servana/screens/active_task_screen.dart';
+import 'package:servana/screens/verification_status_screen.dart'; // Corrected import for rejected status
+import 'package:servana/screens/skill_quests_screen.dart';
+
 
 class NotificationService {
-  // Singleton pattern for easy access
   static final NotificationService _instance = NotificationService._internal();
   factory NotificationService() => _instance;
   NotificationService._internal();
@@ -24,13 +23,9 @@ class NotificationService {
 
   Future<void> initNotifications() async {
     await _fcm.requestPermission();
-
     final fcmToken = await _fcm.getToken();
-    if (fcmToken != null) {
-      _saveTokenToDatabase(fcmToken);
-    }
+    if (fcmToken != null) _saveTokenToDatabase(fcmToken);
     _fcm.onTokenRefresh.listen(_saveTokenToDatabase);
-
     await _initLocalNotifications();
     _setupMessageListeners();
   }
@@ -47,12 +42,10 @@ class NotificationService {
     const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings iosSettings = DarwinInitializationSettings();
     const InitializationSettings settings = InitializationSettings(android: androidSettings, iOS: iosSettings);
-
     await _localNotifications.initialize(
       settings,
       onDidReceiveNotificationResponse: (response) {
         if (response.payload != null && response.payload!.isNotEmpty) {
-          // The payload will now be a string like "type:relatedId"
           final parts = response.payload!.split(':');
           if (parts.length == 2) {
             handleNotificationClick({'type': parts[0], 'relatedId': parts[1]});
@@ -65,11 +58,9 @@ class NotificationService {
   Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
     if (notification == null) return;
-
     final type = message.data['type'] as String? ?? 'general';
     final relatedId = message.data['relatedId'] as String? ?? '';
     final payload = '$type:$relatedId';
-
     await _localNotifications.show(
       notification.hashCode,
       notification.title,
@@ -117,8 +108,9 @@ class NotificationService {
           if (id == null) return;
           final doc = await FirebaseFirestore.instance.collection('tasks').doc(id).get();
           if(doc.exists) {
-            final task = Task.fromFirestore(doc);
-            Navigator.push(context, MaterialPageRoute(builder: (_) => ActiveTaskScreen(initialTask: task)));
+            // --- THIS IS THE FIX ---
+            // We navigate using the task's ID, not the full object.
+            Navigator.push(context, MaterialPageRoute(builder: (_) => ActiveTaskScreen(taskId: doc.id)));
           }
           break;
 
@@ -128,11 +120,12 @@ class NotificationService {
           break;
 
         case 'verification_rejected':
-          Navigator.push(context, MaterialPageRoute(builder: (_) => const VerificationCenterScreen()));
+        // --- LOGICAL FIX ---
+        // Navigate to the status screen so the user can see why they were rejected.
+          Navigator.push(context, MaterialPageRoute(builder: (_) => const VerificationStatusScreen()));
           break;
 
         default:
-        // Fallback or navigate to a general notifications screen
           break;
       }
     } catch (e) {

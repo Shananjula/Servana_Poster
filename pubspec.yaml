@@ -1,4 +1,4 @@
-name: helpify
+name: servana
 description: An AI-powered task marketplace for Sri Lanka.
 publish_to: 'none'
 version: 1.0.0+1
@@ -9,14 +9,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
 
-  # --- Firebase & Core Packages ---
-  firebase_core: ^2.32.0
-  firebase_auth: ^4.19.0
-  cloud_firestore: ^4.17.5
-  firebase_storage: ^11.7.7
-  firebase_messaging: ^14.9.4
-  firebase_app_check: ^0.2.2+1 # --- NEW ---
+  # --- Firebase & Core ---
+  firebase_core: ^3.15.0
+  firebase_auth: ^5.6.1
+  cloud_firestore: ^5.6.10
+  firebase_storage: ^12.4.8
+  firebase_messaging: ^15.2.8
+  firebase_app_check: ^0.3.2+8
 
   # --- AI & Services ---
   google_generative_ai: ^0.4.3
@@ -25,12 +27,13 @@ dependencies:
   # --- UI & Theming ---
   google_fonts: ^6.2.1
   cupertino_icons: ^1.0.6
-  intl: ^0.20.2 # Use the latest version compatible with your project
+  intl: ^0.20.2
   percent_indicator: ^4.2.3
+  flutter_animate: ^4.5.0
 
   # --- Device & Location ---
   google_maps_flutter: ^2.7.0
-  geolocator: ^12.0.0
+  geolocator: ^14.0.2
   geocoding: ^4.0.0
   image_picker: ^1.1.2
 
@@ -38,17 +41,19 @@ dependencies:
   url_launcher: ^6.3.1
   flutter_local_notifications: ^19.3.0
   provider: ^6.1.2
+  lottie: ^3.1.2
+  speech_to_text: ^7.1.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   generate: true
   uses-material-design: true
 
-  # --- UPDATED: Ensure logo.png is listed ---
   assets:
     - assets/Gemini_Generated_Image.png
     - .env
+    - assets/animations/

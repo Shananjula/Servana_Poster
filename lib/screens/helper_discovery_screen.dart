@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:helpify/models/user_model.dart';
-import 'package:helpify/screens/helper_public_profile_screen.dart';
-import 'package:helpify/widgets/empty_state_widget.dart';
-import 'package:helpify/widgets/helper_card.dart'; // This is the supporting widget
+import 'package:servana/models/user_model.dart';
+import 'package:servana/screens/helper_public_profile_screen.dart';
+import 'package:servana/widgets/empty_state_widget.dart';
+import 'package:servana/widgets/helper_card.dart'; // This is the supporting widget
 
 // Enum to switch between List and Map views
 enum ViewMode { list, map }

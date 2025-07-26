@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:helpify/models/user_model.dart';
-import '../models/task_model.dart';
+import 'package:servana/models/task_model.dart';
+import 'package:servana/services/firestore_service.dart';
 
-/// A screen for users to rate each other after a task is completed.
 class RatingScreen extends StatefulWidget {
   final Task task;
   final String personToRateId;
@@ -24,75 +22,38 @@ class RatingScreen extends StatefulWidget {
 }
 
 class _RatingScreenState extends State<RatingScreen> {
+  final FirestoreService _firestoreService = FirestoreService();
   double _rating = 0.0;
   final _reviewController = TextEditingController();
   bool _isLoading = false;
 
-  /// Submits the review and updates the user's average rating in a single transaction.
+  /// Submits the review by calling the centralized service function.
   Future<void> _submitReview() async {
     if (_rating == 0.0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a star rating.'), backgroundColor: Colors.red),
+        const SnackBar(content: Text('Please select a star rating.'), backgroundColor: Colors.orange),
       );
       return;
     }
 
     final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You must be logged in to leave a review.')),
-      );
-      return;
-    }
+    if (currentUser == null) return;
 
     setState(() => _isLoading = true);
 
-    final ratedUserRef = FirebaseFirestore.instance.collection('users').doc(widget.personToRateId);
-    final reviewRef = FirebaseFirestore.instance.collection('reviews').doc();
-    final taskRef = FirebaseFirestore.instance.collection('tasks').doc(widget.task.id);
-
     try {
-      // Use a transaction to ensure all database operations succeed or fail together.
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final ratedUserDoc = await transaction.get(ratedUserRef);
-        if (!ratedUserDoc.exists) {
-          throw Exception("User to be rated not found!");
-        }
-
-        final ratedUserData = HelpifyUser.fromFirestore(ratedUserDoc);
-
-        // Calculate new average rating
-        final oldRatingTotal = ratedUserData.averageRating * ratedUserData.ratingCount;
-        final newRatingCount = ratedUserData.ratingCount + 1;
-        final newAverageRating = (oldRatingTotal + _rating) / newRatingCount;
-
-        // 1. Update the rated user's profile with the new average and count.
-        transaction.update(ratedUserRef, {
-          'averageRating': newAverageRating,
-          'ratingCount': newRatingCount,
-        });
-
-        // 2. Create the new review document.
-        transaction.set(reviewRef, {
-          'rating': _rating,
-          'reviewText': _reviewController.text.trim(),
-          'taskId': widget.task.id,
-          'taskTitle': widget.task.title,
-          'reviewerId': currentUser.uid,
-          'reviewerName': currentUser.displayName ?? 'Anonymous',
-          'reviewerAvatarUrl': currentUser.photoURL,
-          'ratedUserId': widget.personToRateId,
-          'timestamp': FieldValue.serverTimestamp(),
-        });
-
-        // 3. Mark the task as 'completed'.
-        transaction.update(taskRef, {
-          'status': 'completed',
-          'ratedAt': FieldValue.serverTimestamp(),
-        });
-      });
+      await _firestoreService.submitReviewAndCloseTask(
+        task: widget.task,
+        ratedUserId: widget.personToRateId,
+        reviewerId: currentUser.uid,
+        reviewerName: currentUser.displayName ?? 'Anonymous',
+        reviewerAvatarUrl: currentUser.photoURL,
+        rating: _rating,
+        reviewText: _reviewController.text.trim(),
+      );
 
       if (mounted) {
+        // Pop back to the root screen (e.g., home screen) after successful rating
         Navigator.of(context).popUntil((route) => route.isFirst);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Thank you for your feedback!'), backgroundColor: Colors.green),
@@ -100,7 +61,6 @@ class _RatingScreenState extends State<RatingScreen> {
       }
 
     } catch (e) {
-      print("Failed to submit review: $e");
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to submit review: ${e.toString()}'), backgroundColor: Colors.red),
@@ -125,10 +85,6 @@ class _RatingScreenState extends State<RatingScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Rate Your Experience'),
-        centerTitle: true,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        foregroundColor: theme.textTheme.bodyLarge?.color,
       ),
       body: Center(
         child: SingleChildScrollView(
@@ -138,7 +94,6 @@ class _RatingScreenState extends State<RatingScreen> {
             children: [
               CircleAvatar(
                 radius: 45,
-                backgroundColor: theme.colorScheme.surfaceVariant,
                 backgroundImage: widget.personToRateAvatarUrl != null && widget.personToRateAvatarUrl!.isNotEmpty
                     ? NetworkImage(widget.personToRateAvatarUrl!)
                     : null,
@@ -167,16 +122,18 @@ class _RatingScreenState extends State<RatingScreen> {
                 decoration: InputDecoration(
                   hintText: 'Share more details... (optional)',
                   border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  fillColor: theme.colorScheme.surface,
                 ),
               ),
               const SizedBox(height: 32),
-              ElevatedButton(
-                onPressed: _isLoading ? null : _submitReview,
-                style: theme.elevatedButtonTheme.style,
-                child: _isLoading
-                    ? const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white))
-                    : const Text('Submit Review'),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _isLoading ? null : _submitReview,
+                  style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                  child: _isLoading
+                      ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white))
+                      : const Text('Submit Review & Complete Task'),
+                ),
               ),
             ],
           ),

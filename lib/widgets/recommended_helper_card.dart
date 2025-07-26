@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:helpify/models/user_model.dart';
-import 'package:helpify/screens/profile_screen.dart';
+import 'package:servana/models/user_model.dart';
+import 'package:servana/screens/profile_screen.dart';
 
 class RecommendedHelperCard extends StatelessWidget {
   final HelpifyUser helper;

@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:helpify/services/ai_service.dart';
+import 'package:servana/services/ai_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:geolocator/geolocator.dart';
@@ -25,7 +25,11 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
   final _titleController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _budgetController = TextEditingController();
-  bool _isGeneratingDesc = false;
+
+  // --- AI: State for suggestions ---
+  bool _isGeneratingSuggestions = false;
+  String? _suggestedBudget;
+  Timer? _debounce;
 
   TaskType _selectedTaskType = TaskType.physical;
   String? _selectedCategory;
@@ -49,30 +53,81 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
   List<String> _subCategories = [];
 
   @override
+  void initState() {
+    super.initState();
+    _titleController.addListener(() {
+      if (_debounce?.isActive ?? false) _debounce!.cancel();
+      _debounce = Timer(const Duration(milliseconds: 1000), () {
+        if (_titleController.text.trim().length > 10) {
+          _getAiSuggestions();
+        }
+      });
+    });
+  }
+
+  @override
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
     _budgetController.dispose();
+    _debounce?.cancel();
     super.dispose();
   }
 
-  // --- AI Description Generator ---
-  Future<void> _generateDescription() async {
-    if (_titleController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please enter a title first.")));
-      return;
-    }
-    setState(() => _isGeneratingDesc = true);
-    final suggestion = await AiService.generateTaskDescription(_titleController.text.trim());
-    if (suggestion != null && mounted) {
+  Future<void> _getAiSuggestions() async {
+    setState(() => _isGeneratingSuggestions = true);
+    final suggestions = await AiService.getTaskSuggestionsFromTitle(_titleController.text.trim());
+    if (suggestions != null && mounted) {
       setState(() {
-        _descriptionController.text = suggestion;
+        if(_descriptionController.text.trim().isEmpty) {
+          _descriptionController.text = suggestions['description'] ?? '';
+        }
+
+        final suggestedCategory = suggestions['category'];
+        if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
+          _selectedCategory = suggestedCategory;
+          _subCategories = _categories[suggestedCategory] ?? [];
+          _selectedSubCategory = null;
+        }
+
+        final budget = suggestions['budget'];
+        if(budget != null) {
+          _suggestedBudget = budget.toString();
+        }
       });
     }
-    setState(() => _isGeneratingDesc = false);
+    setState(() => _isGeneratingSuggestions = false);
   }
 
-  // --- Main Submission Logic ---
+  Future<void> _generateTaskFromImage() async {
+    if (_imageFile == null) return;
+    setState(() => _isGeneratingSuggestions = true);
+
+    final imageData = await _imageFile!.readAsBytes();
+    final suggestions = await AiService.generateTaskFromImage(_titleController.text.trim(), imageData);
+
+    if(suggestions != null && mounted) {
+      setState(() {
+        _titleController.text = suggestions['title'] ?? _titleController.text;
+        _descriptionController.text = suggestions['description'] ?? _descriptionController.text;
+
+        final suggestedCategory = suggestions['category'];
+        if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
+          _selectedCategory = suggestedCategory;
+          _subCategories = _categories[suggestedCategory] ?? [];
+          _selectedSubCategory = null;
+        }
+
+        final budget = suggestions['budget'];
+        if (budget != null) {
+          _suggestedBudget = budget;
+          _budgetController.text = budget;
+        }
+      });
+    }
+    setState(() => _isGeneratingSuggestions = false);
+  }
+
   Future<void> _submitTask() async {
     if (!_formKey.currentState!.validate()) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all required fields.')));
@@ -91,8 +146,11 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     try {
       if (_imageFile != null) {
         setState(() => _isUploadingImage = true);
-        final fileName = '${user.uid}-${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final ref = FirebaseStorage.instance.ref().child('task_images').child(fileName);
+        final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
+        final ref = FirebaseStorage.instance.ref()
+            .child('task_images')
+            .child(user.uid)
+            .child(fileName);
         await ref.putFile(File(_imageFile!.path));
         _imageUrl = await ref.getDownloadURL();
         setState(() => _isUploadingImage = false);
@@ -117,6 +175,9 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
         'posterAvatarUrl': user.photoURL ?? '',
         'status': 'open',
         'timestamp': FieldValue.serverTimestamp(),
+        // --- THIS IS THE FIX ---
+        // This ensures the poster is a participant in their own task from the start.
+        'participantIds': [user.uid],
       };
 
       await FirebaseFirestore.instance.collection('tasks').add(taskData);
@@ -138,7 +199,6 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     }
   }
 
-  // --- Location Helper Methods ---
   Future<void> _getCurrentLocation() async {
     setState(() => _isFetchingLocation = true);
     try {
@@ -188,7 +248,6 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     }
   }
 
-  // --- UI Build Methods ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -214,22 +273,16 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
               _buildSectionHeader('2. Describe your Task'),
               TextFormField(
                 controller: _titleController,
-                decoration: const InputDecoration(labelText: 'Task Title'),
+                decoration: InputDecoration(
+                  labelText: 'Task Title',
+                  suffixIcon: _isGeneratingSuggestions ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width:20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))) : null,
+                ),
                 validator: (value) => value!.isEmpty ? 'Please enter a title' : null,
               ),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _descriptionController,
-                decoration: InputDecoration(
-                    labelText: 'Description',
-                    suffixIcon: _isGeneratingDesc
-                        ? const Padding(padding: EdgeInsets.all(12.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)))
-                        : IconButton(
-                      icon: const Icon(Icons.auto_awesome),
-                      tooltip: 'Generate with AI',
-                      onPressed: _generateDescription,
-                    )
-                ),
+                decoration: const InputDecoration(labelText: 'Description'),
                 maxLines: 5,
                 validator: (value) => value!.isEmpty ? 'Please enter a description' : null,
               ),
@@ -248,6 +301,9 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
                 decoration: const InputDecoration(labelText: 'Your Budget (LKR)'),
                 validator: (value) => value!.isEmpty ? 'Please enter a budget' : null,
               ),
+              if (_suggestedBudget != null)
+                _buildBudgetSuggestion(),
+
               const SizedBox(height: 24),
               _buildSectionHeader(_selectedTaskType == TaskType.physical ? '5. Add a Photo (Optional)' : '4. Add a Photo (Optional)'),
               _buildImagePicker(),
@@ -303,6 +359,12 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     final relevantCategories = _selectedTaskType == TaskType.online
         ? _categories.keys.where((k) => k == 'Digital & Online' || k == 'Education' || k == 'Other').toList()
         : _categories.keys.where((k) => k != 'Digital & Online').toList();
+
+    if (_selectedCategory != null && !relevantCategories.contains(_selectedCategory)) {
+      _selectedCategory = null;
+      _selectedSubCategory = null;
+      _subCategories = [];
+    }
 
     return Column(
       children: [
@@ -363,16 +425,27 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
                 : const Center(child: Text('No image selected.')),
           ),
           const SizedBox(height: 8),
-          TextButton.icon(
-            onPressed: () async {
-              final picker = ImagePicker();
-              final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-              if (file != null) {
-                setState(() => _imageFile = file);
-              }
-            },
-            icon: const Icon(Icons.add_photo_alternate_outlined),
-            label: const Text('Select an Image'),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              TextButton.icon(
+                onPressed: () async {
+                  final picker = ImagePicker();
+                  final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+                  if (file != null) {
+                    setState(() => _imageFile = file);
+                  }
+                },
+                icon: const Icon(Icons.add_photo_alternate_outlined),
+                label: const Text('Select an Image'),
+              ),
+              if (_imageFile != null)
+                TextButton.icon(
+                  onPressed: _generateTaskFromImage,
+                  icon: Icon(Icons.auto_awesome, color: Theme.of(context).primaryColor),
+                  label: Text('Analyze with AI', style: TextStyle(color: Theme.of(context).primaryColor)),
+                ),
+            ],
           ),
         ],
       ),
@@ -422,6 +495,31 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
           ],
         )
       ],
+    );
+  }
+
+  Widget _buildBudgetSuggestion() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      margin: const EdgeInsets.only(top: 8),
+      decoration: BoxDecoration(
+        color: Colors.teal.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Flexible(child: Text("✨ AI Suggestion: LKR $_suggestedBudget", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.teal.shade800))),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _budgetController.text = _suggestedBudget!;
+              });
+            },
+            child: const Text("Apply"),
+          )
+        ],
+      ),
     );
   }
 }

@@ -1,13 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:servana/screens/home_screen.dart';
+import 'package:servana/screens/service_selection_screen.dart';
+import 'package:servana/screens/verification_status_screen.dart'; // <-- NEW IMPORT
 
-// --- Edit Profile Screen Widget ---
 class EditProfileScreen extends StatefulWidget {
-  const EditProfileScreen({Key? key}) : super(key: key);
+  final bool isInitialSetup;
+  final bool isHelperSetup;
+  final ServiceType? serviceType;
+
+  const EditProfileScreen({
+    Key? key,
+    this.isInitialSetup = false,
+    this.isHelperSetup = false,
+    this.serviceType,
+  }) : super(key: key);
 
   @override
-  State<EditProfileScreen> createState() => _EditProfileScreenState();
+  _EditProfileScreenState createState() => _EditProfileScreenState();
 }
 
 class _EditProfileScreenState extends State<EditProfileScreen> {
@@ -15,53 +26,65 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
 
-  // Controllers for all form fields
   late TextEditingController _nameController;
   late TextEditingController _bioController;
   late TextEditingController _qualificationsController;
   late TextEditingController _experienceController;
   late TextEditingController _subjectsController;
   late TextEditingController _rateController;
-
-  bool _isHelper = false; // To toggle the Helper Details section
+  late TextEditingController _vehicleTypeController;
+  late TextEditingController _vehicleDetailsController;
 
   @override
   void initState() {
     super.initState();
+    _nameController = TextEditingController();
+    _bioController = TextEditingController();
+    _qualificationsController = TextEditingController();
+    _experienceController = TextEditingController();
+    _subjectsController = TextEditingController();
+    _rateController = TextEditingController();
+    _vehicleTypeController = TextEditingController();
+    _vehicleDetailsController = TextEditingController();
     _loadUserData();
   }
 
-  // Load existing user data from Firestore
   Future<void> _loadUserData() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() => _isLoading = false);
       return;
     }
-
-    final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-    final userData = userDoc.data() ?? {};
-
-    // Initialize controllers with Firestore data
-    _nameController = TextEditingController(text: userData['displayName'] ?? user.displayName);
-    _bioController = TextEditingController(text: userData['bio'] ?? '');
-    _qualificationsController = TextEditingController(text: userData['qualifications'] ?? '');
-    _experienceController = TextEditingController(text: userData['experience'] ?? '');
-    _subjectsController = TextEditingController(text: userData['subjects'] ?? '');
-    _rateController = TextEditingController(text: (userData['hourlyRate'] ?? 0).toString());
-    _isHelper = userData['isHelper'] ?? false;
-
-    setState(() => _isLoading = false);
+    try {
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final userData = userDoc.data() ?? {};
+      _nameController.text = userData['displayName'] ?? user.displayName ?? '';
+      _bioController.text = userData['bio'] ?? '';
+      _qualificationsController.text = userData['qualifications'] ?? '';
+      _experienceController.text = userData['experience'] ?? '';
+      _subjectsController.text = userData['subjects'] ?? '';
+      _rateController.text = (userData['hourlyRate'] ?? '').toString();
+      _vehicleTypeController.text = userData['vehicleType'] ?? '';
+      _vehicleDetailsController.text = userData['vehicleDetails'] ?? '';
+    } catch (e) {
+      print("Error loading user data: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not load profile data.'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
-  // Save updated data back to Firestore
   Future<void> _saveProfile() async {
     if (!_formKey.currentState!.validate()) {
       return;
     }
-
     setState(() => _isSaving = true);
-
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() => _isSaving = false);
@@ -69,25 +92,37 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
 
     try {
-      // Update Auth profile if name changed
       if (user.displayName != _nameController.text) {
         await user.updateDisplayName(_nameController.text);
       }
 
-      // Prepare data map
       final Map<String, dynamic> dataToSave = {
         'displayName': _nameController.text,
         'bio': _bioController.text,
-        'isHelper': _isHelper,
-        if (_isHelper) ...{
-          'qualifications': _qualificationsController.text,
-          'experience': _experienceController.text,
-          'subjects': _subjectsController.text,
-          'hourlyRate': double.tryParse(_rateController.text) ?? 0.0,
-        }
+        if (widget.isInitialSetup) 'hasCompletedRoleSelection': true,
       };
 
-      // Update the user's document in Firestore
+      if (widget.isHelperSetup) {
+        switch (widget.serviceType) {
+          case ServiceType.tutor:
+            dataToSave.addAll({
+              'qualifications': _qualificationsController.text,
+              'experience': _experienceController.text,
+              'subjects': _subjectsController.text,
+              'hourlyRate': double.tryParse(_rateController.text) ?? 0.0,
+            });
+            break;
+          case ServiceType.pickupDriver:
+            dataToSave.addAll({
+              'vehicleType': _vehicleTypeController.text,
+              'vehicleDetails': _vehicleDetailsController.text,
+            });
+            break;
+          default:
+            break;
+        }
+      }
+
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
         dataToSave,
         SetOptions(merge: true),
@@ -97,7 +132,24 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Profile saved successfully!'), backgroundColor: Colors.green),
         );
-        Navigator.of(context).pop();
+
+        // --- UPDATED NAVIGATION LOGIC ---
+        if (widget.isHelperSetup) {
+          // If it was helper setup, go to the status screen.
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const VerificationStatusScreen()),
+                (route) => false,
+          );
+        } else if (widget.isInitialSetup) {
+          // If it was a poster setup, go to home.
+          Navigator.of(context).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+                (route) => false,
+          );
+        } else {
+          // Otherwise, just pop back (it was a normal profile edit).
+          Navigator.of(context).pop();
+        }
       }
 
     } catch(e) {
@@ -114,7 +166,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
-
   @override
   void dispose() {
     _nameController.dispose();
@@ -123,6 +174,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _experienceController.dispose();
     _subjectsController.dispose();
     _rateController.dispose();
+    _vehicleTypeController.dispose();
+    _vehicleDetailsController.dispose();
     super.dispose();
   }
 
@@ -130,7 +183,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Edit Profile'),
+        title: Text(widget.isInitialSetup ? 'Set Up Profile' : 'Edit Profile'),
+        automaticallyImplyLeading: !widget.isInitialSetup,
         actions: [
           IconButton(
             icon: _isSaving ? const SizedBox(width:20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.0,)) : const Icon(Icons.save),
@@ -161,24 +215,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 maxLines: 3,
               ),
               const SizedBox(height: 24),
-
-              // --- Helper Details Section ---
-              SwitchListTile(
-                title: const Text('I am a Helper/Tutor', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                subtitle: const Text('Enable this to offer your services.'),
-                value: _isHelper,
-                onChanged: (value) => setState(() => _isHelper = value),
-                activeColor: Theme.of(context).primaryColor,
-              ),
-
-              // Animated visibility for helper-specific fields
-              AnimatedSize(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                child: _isHelper
-                    ? _buildHelperDetailsSection()
-                    : const SizedBox.shrink(),
-              ),
+              if (widget.isHelperSetup)
+                _buildHelperDetailsSection(),
             ],
           ),
         ),
@@ -191,23 +229,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       padding: const EdgeInsets.only(bottom: 12.0, top: 16.0),
       child: Text(
         title,
-        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.teal),
+        style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Theme.of(context).primaryColor),
       ),
     );
   }
 
   Widget _buildHelperDetailsSection() {
-    return Container(
-      margin: const EdgeInsets.only(top: 16.0),
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: Colors.teal.withOpacity(0.05),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _buildSectionHeader('Helper Details'),
+    List<Widget> fields = [];
+    switch (widget.serviceType) {
+      case ServiceType.tutor:
+        fields = [
+          _buildSectionHeader('Tutor Details'),
           TextFormField(
             controller: _qualificationsController,
             decoration: const InputDecoration(labelText: 'Educational Qualifications', hintText: 'e.g., B.Sc. in Computer Science'),
@@ -220,15 +252,45 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           const SizedBox(height: 16),
           TextFormField(
             controller: _subjectsController,
-            decoration: const InputDecoration(labelText: 'Subjects or Skills Offered', hintText: 'e.g., Mathematics, Physics, Graphic Design'),
+            decoration: const InputDecoration(labelText: 'Subjects Offered', hintText: 'e.g., Mathematics, Physics'),
           ),
           const SizedBox(height: 16),
           TextFormField(
             controller: _rateController,
             keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Your Rate (LKR)', hintText: 'e.g., 2000', prefixText: 'LKR '),
+            decoration: const InputDecoration(labelText: 'Your Rate (LKR per hour)', hintText: 'e.g., 2000', prefixText: 'LKR '),
           ),
-        ],
+        ];
+        break;
+      case ServiceType.pickupDriver:
+        fields = [
+          _buildSectionHeader('Driver Details'),
+          TextFormField(
+            controller: _vehicleTypeController,
+            decoration: const InputDecoration(labelText: 'Vehicle Type', hintText: 'e.g., Bike, Car, Van, Lorry'),
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _vehicleDetailsController,
+            decoration: const InputDecoration(labelText: 'Vehicle Details', hintText: 'e.g., Bajaj Pulsar 150 (2022)'),
+          ),
+        ];
+        break;
+      default:
+        fields = [_buildSectionHeader('Service Details'), const Text("Please describe your service in your bio.")];
+        break;
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 16.0),
+      padding: const EdgeInsets.all(16.0),
+      decoration: BoxDecoration(
+        color: Theme.of(context).primaryColor.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: fields,
       ),
     );
   }

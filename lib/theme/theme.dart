@@ -96,7 +96,7 @@ class AppTheme {
       ),
     ),
 
-    // *** THIS IS THE CORRECTED LINE ***
+    // The 'const' keyword was removed from this line to fix the error.
     cardTheme: CardThemeData(
       elevation: 1,
       color: cardColor,

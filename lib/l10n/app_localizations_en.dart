@@ -9,7 +9,10 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
-  String get appTitle => 'Helpify';
+  String get settingsTitle => 'App Settings';
+
+  @override
+  String get appTitle => 'Servana';
 
   @override
   String get home => 'Home';
@@ -18,5 +21,5 @@ class AppLocalizationsEn extends AppLocalizations {
   String get profile => 'Profile';
 
   @override
-  String get welcomeMessage => 'Welcome to Helpify!';
+  String get welcomeMessage => 'Welcome to Servana!';
 }

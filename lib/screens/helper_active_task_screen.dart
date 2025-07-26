@@ -1,12 +1,13 @@
 import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:helpify/models/task_model.dart';
+import 'package:servana/models/task_model.dart';
+import 'package:servana/services/firestore_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-/// A screen for the Helper to view their assigned task and broadcast their location.
+/// A simplified screen for the Helper, focusing on location sharing and navigation.
+/// The main task flow logic is handled by ActiveTaskScreen.
 class HelperActiveTaskScreen extends StatefulWidget {
   final Task task;
 
@@ -17,14 +18,21 @@ class HelperActiveTaskScreen extends StatefulWidget {
 }
 
 class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
-  // This will hold the subscription to the location stream
+  final FirestoreService _firestoreService = FirestoreService();
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isSharingLocation = false;
-  String _statusMessage = "Start sharing your location when you are on your way.";
+
+  @override
+  void initState() {
+    super.initState();
+    // Automatically start sharing location if the journey is already in progress
+    if (widget.task.status == 'en_route') {
+      _startLocationUpdates();
+    }
+  }
 
   @override
   void dispose() {
-    // IMPORTANT: Always cancel the stream subscription when the screen is disposed
     _positionStreamSubscription?.cancel();
     super.dispose();
   }
@@ -40,86 +48,75 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
 
   /// Starts listening to the device's location and updating Firestore.
   void _startLocationUpdates() async {
-    // First, check for location permissions
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        _updateStatus("Location permission denied. Cannot share location.", isError: true);
-        return;
-      }
-    }
-    if (permission == LocationPermission.deniedForever) {
-      _updateStatus("Location permissions are permanently denied. Please enable them in your device settings.", isError: true);
+    // Check if location is already being shared
+    if (_isSharingLocation) return;
+
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      _showError("Location services are disabled.");
       return;
     }
 
-    // Settings for how often to get updates
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        _showError("Location permissions are denied.");
+        return;
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      _showError("Location permissions are permanently denied.");
+      return;
+    }
+
     const LocationSettings locationSettings = LocationSettings(
       accuracy: LocationAccuracy.high,
       distanceFilter: 10, // Update every 10 meters
     );
 
-    // Subscribe to the position stream
     _positionStreamSubscription = Geolocator.getPositionStream(locationSettings: locationSettings).listen(
           (Position position) {
-        print('Updating location: ${position.latitude}, ${position.longitude}');
-        // Get a reference to the task document
-        final taskRef = FirebaseFirestore.instance.collection('tasks').doc(widget.task.id);
-
-        // Update the helper's location in Firestore
-        taskRef.update({
+        FirebaseFirestore.instance.collection('tasks').doc(widget.task.id).update({
           'helperLastLocation': GeoPoint(position.latitude, position.longitude),
         });
       },
       onError: (error) {
-        print("Error getting location: $error");
-        _updateStatus("Error getting location. Sharing has stopped.", isError: true);
+        _showError("Error getting location. Sharing stopped.");
         _stopLocationUpdates();
       },
     );
 
-    _updateStatus("Live location is now ON.", isError: false);
-    setState(() {
-      _isSharingLocation = true;
-    });
+    if(mounted) setState(() => _isSharingLocation = true);
   }
 
-  /// Stops the location updates and cancels the stream subscription.
   void _stopLocationUpdates() {
     _positionStreamSubscription?.cancel();
-    _updateStatus("Location sharing is now OFF.");
-    setState(() {
-      _isSharingLocation = false;
-    });
+    if(mounted) setState(() => _isSharingLocation = false);
   }
 
-  void _updateStatus(String message, {bool isError = false}) {
+  void _showError(String message) {
     if(mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Colors.red : Colors.green,
+        backgroundColor: Colors.red,
       ));
-      setState(() {
-        _statusMessage = message;
-      });
     }
   }
 
-  /// Launches Google Maps for navigation to the task destination.
   Future<void> _launchMapsNavigation() async {
     if (widget.task.location == null) return;
-
     final lat = widget.task.location!.latitude;
     final lng = widget.task.location!.longitude;
     final url = Uri.parse('https://www.google.com/maps/dir/?api=1&destination=$lat,$lng');
-
     if (await canLaunchUrl(url)) {
       await launchUrl(url, mode: LaunchMode.externalApplication);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open maps application.'))
-      );
+      _showError('Could not open maps application.');
     }
   }
 
@@ -127,7 +124,7 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Active Task'),
+        title: const Text('Your Active Task'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -136,7 +133,7 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
           children: [
             _buildTaskInfoCard(),
             const SizedBox(height: 24),
-            _buildLocationCard(),
+            _buildLocationAndActionCard(),
           ],
         ),
       ),
@@ -145,17 +142,15 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
 
   Widget _buildTaskInfoCard() {
     return Card(
-      elevation: 4,
+      elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(widget.task.title, style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+            Text(widget.task.title, style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: 8),
-            Text(widget.task.description, style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: Colors.grey[700])),
-            const Divider(height: 32),
             _buildInfoRow(Icons.person_outline, 'Task Poster', widget.task.posterName),
             const SizedBox(height: 12),
             _buildInfoRow(Icons.account_balance_wallet_outlined, 'Your Earnings', 'LKR ${widget.task.finalAmount?.toStringAsFixed(2) ?? widget.task.budget.toStringAsFixed(2)}'),
@@ -165,16 +160,16 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
     );
   }
 
-  Widget _buildLocationCard() {
+  Widget _buildLocationAndActionCard() {
     return Card(
-      elevation: 4,
+      elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text("Task Location", style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+            Text("Task Location", style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 16),
             _buildInfoRow(Icons.location_on_outlined, 'Address', widget.task.locationAddress ?? 'Not specified'),
             const SizedBox(height: 24),
@@ -182,19 +177,43 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
               onPressed: _launchMapsNavigation,
               icon: const Icon(Icons.navigation_outlined),
               label: const Text("Get Directions"),
-              style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
+              style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
             ),
             const Divider(height: 40),
-            Center(child: Text(_statusMessage, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.grey[600]), textAlign: TextAlign.center,)),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: _toggleLocationSharing,
-              icon: Icon(_isSharingLocation ? Icons.stop_circle_outlined : Icons.my_location),
-              label: Text(_isSharingLocation ? 'Stop Sharing Location' : 'Start Sharing Location'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 50),
-                backgroundColor: _isSharingLocation ? Colors.red : Theme.of(context).primaryColor,
+            // --- This section now calls the FirestoreService ---
+            if (widget.task.status == 'assigned')
+              ElevatedButton.icon(
+                onPressed: () {
+                  _firestoreService.helperStartsJourney(widget.task.id);
+                  _startLocationUpdates(); // Start sharing location when journey begins
+                },
+                icon: const Icon(Icons.route_outlined),
+                label: const Text('Start Journey'),
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
               ),
+            if (widget.task.status == 'en_route')
+              ElevatedButton.icon(
+                onPressed: () {
+                  _firestoreService.helperArrives(widget.task.id);
+                  _stopLocationUpdates(); // Stop sharing location on arrival
+                },
+                icon: const Icon(Icons.pin_drop_outlined),
+                label: const Text('I Have Arrived'),
+                style: ElevatedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+              ),
+            const SizedBox(height: 16),
+            // --- Location Sharing Toggle ---
+            Text(
+              _isSharingLocation ? "Live location is ON" : "Live location is OFF",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _isSharingLocation ? Colors.green : Colors.grey, fontWeight: FontWeight.bold),
+            ),
+            SwitchListTile(
+              title: const Text('Share Live Location'),
+              value: _isSharingLocation,
+              onChanged: (bool value) {
+                _toggleLocationSharing();
+              },
             ),
           ],
         ),
@@ -208,13 +227,15 @@ class _HelperActiveTaskScreenState extends State<HelperActiveTaskScreen> {
       children: [
         Icon(icon, color: Colors.grey[600], size: 20),
         const SizedBox(width: 16),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: TextStyle(color: Colors.grey[600])),
-            const SizedBox(height: 2),
-            Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-          ],
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(color: Colors.grey[600])),
+              const SizedBox(height: 2),
+              Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            ],
+          ),
         )
       ],
     );
