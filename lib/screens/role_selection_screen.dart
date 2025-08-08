@@ -1,44 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:servana/screens/edit_profile_screen.dart';
-import 'package:servana/screens/home_screen.dart';
-import 'package:servana/screens/service_selection_screen.dart'; // <-- UPDATED IMPORT
 
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key});
 
-  Future<void> _selectRole(BuildContext context, bool isHelper) async {
+  /// Updates the user's role in Firestore. The AuthWrapper will then handle navigation.
+  Future<void> _selectRole(BuildContext context, String role) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     try {
-      // Set the user's role. We will mark selection as complete later.
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'isHelper': isHelper,
-      }, SetOptions(merge: true));
-
-      if (!context.mounted) return;
-
-      // --- UPDATED NAVIGATION LOGIC ---
-      if (isHelper) {
-        // For helpers, the next step is to choose their service type.
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const ServiceSelectionScreen()),
-        );
-      } else {
-        // For posters, mark selection as complete and go to profile setup.
-        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-          'hasCompletedRoleSelection': true,
-        }, SetOptions(merge: true));
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const EditProfileScreen(isInitialSetup: true)),
+      // This is its only job! Set the role and nothing else.
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
+        'role': role,
+      });
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save role: ${e.toString()}')),
         );
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save role: ${e.toString()}')),
-      );
     }
   }
 
@@ -73,7 +55,7 @@ class RoleSelectionScreen extends StatelessWidget {
                 icon: Icons.task_alt_rounded,
                 title: 'I want to get tasks done',
                 subtitle: 'Post jobs and find skilled people to help you.',
-                onTap: () => _selectRole(context, false), // isHelper = false
+                onTap: () => _selectRole(context, 'poster'), // Sets role to 'poster'
               ),
               const SizedBox(height: 24),
               _buildRoleCard(
@@ -81,7 +63,7 @@ class RoleSelectionScreen extends StatelessWidget {
                 icon: Icons.work_outline_rounded,
                 title: 'I want to offer my services',
                 subtitle: 'Find jobs, offer your skills, and start earning money.',
-                onTap: () => _selectRole(context, true), // isHelper = true
+                onTap: () => _selectRole(context, 'helper'), // Sets role to 'helper'
               ),
             ],
           ),

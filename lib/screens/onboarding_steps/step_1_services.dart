@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:servana/constants/service_categories.dart';
 
 class ServiceSelectionStep extends StatefulWidget {
   final VoidCallback onContinue;
@@ -20,6 +21,9 @@ class _ServiceSelectionStepState extends State<ServiceSelectionStep> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
+  // Controller for the custom skill text field
+  final TextEditingController _otherSkillController = TextEditingController();
+
   late Set<String> _selectedSkills;
   bool _isLoading = false;
 
@@ -29,10 +33,22 @@ class _ServiceSelectionStepState extends State<ServiceSelectionStep> {
     _selectedSkills = Set<String>.from(widget.initialSkills);
   }
 
+  @override
+  void dispose() {
+    _otherSkillController.dispose();
+    super.dispose();
+  }
+
   Future<void> _saveAndContinue() async {
+    // Add the custom skill to the set if it's not empty
+    final String customSkill = _otherSkillController.text.trim();
+    if (customSkill.isNotEmpty) {
+      _selectedSkills.add(customSkill);
+    }
+
     if (_selectedSkills.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please select at least one service.")),
+        const SnackBar(content: Text("Please select or add at least one service.")),
       );
       return;
     }
@@ -48,9 +64,11 @@ class _ServiceSelectionStepState extends State<ServiceSelectionStep> {
         widget.onContinue();
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Failed to save services: ${e.toString()}")),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to save services: ${e.toString()}")),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -73,46 +91,58 @@ class _ServiceSelectionStepState extends State<ServiceSelectionStep> {
           ),
           const SizedBox(height: 12),
           Text(
-            "Select all that apply. This helps customers find you.",
+            "Select all that apply, or add your own skill below.",
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyLarge,
           ),
           const SizedBox(height: 24),
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: _firestore.collection('services').snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
+            child: ListView.builder(
+              itemCount: AppServices.categories.keys.length + 1,
+              itemBuilder: (context, index) {
+                // If it's the last item, build the "Other" input field
+                if (index == AppServices.categories.keys.length) {
+                  return Card(
+                    margin: const EdgeInsets.only(top: 8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: TextField(
+                        controller: _otherSkillController,
+                        decoration: const InputDecoration(
+                          labelText: 'Other Skill',
+                          hintText: 'e.g., Drone Videography',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  );
                 }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(child: Text("No services found. Please contact support."));
-                }
-                final services = snapshot.data!.docs;
-                return ListView.builder(
-                  itemCount: services.length,
-                  itemBuilder: (context, index) {
-                    final service = services[index];
-                    final serviceName = service['name'] as String? ?? 'Unnamed Service';
-                    final isSelected = _selectedSkills.contains(serviceName);
 
-                    return Card(
-                      color: isSelected ? theme.colorScheme.primary.withOpacity(0.1) : null,
-                      child: CheckboxListTile(
-                        title: Text(serviceName),
+                // Otherwise, build the category expansion tiles
+                final category = AppServices.categories.keys.elementAt(index);
+                final skills = AppServices.categories[category]!;
+
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ExpansionTile(
+                    title: Text(category, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    children: skills.map((skill) {
+                      final isSelected = _selectedSkills.contains(skill);
+                      return CheckboxListTile(
+                        title: Text(skill),
                         value: isSelected,
                         onChanged: (bool? value) {
                           setState(() {
                             if (value == true) {
-                              _selectedSkills.add(serviceName);
+                              _selectedSkills.add(skill);
                             } else {
-                              _selectedSkills.remove(serviceName);
+                              _selectedSkills.remove(skill);
                             }
                           });
                         },
-                      ),
-                    );
-                  },
+                      );
+                    }).toList(),
+                  ),
                 );
               },
             ),

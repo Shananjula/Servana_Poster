@@ -109,18 +109,31 @@ class _VerificationCenterScreenState extends State<VerificationCenterScreen> {
     try {
       final batch = FirebaseFirestore.instance.batch();
 
-      // 1. Create the verification request document
-      final requestRef = FirebaseFirestore.instance.collection('verification_requests').doc();
-      batch.set(requestRef, {
-        'userId': user.uid,
-        'userName': user.displayName ?? 'N/A',
-        'userEmail': user.email,
-        'serviceType': widget.serviceType.name,
-        'documents': _uploadedFileUrls.map((key, value) => MapEntry(key.name, value)),
-        'status': 'pending_review',
-        'submittedAt': FieldValue.serverTimestamp(),
-      });
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) return;
 
+// --- START OF FIX ---
+// Loop through each uploaded file and create a separate document for it.
+      for (final entry in _uploadedFileUrls.entries) {
+        final docType = entry.key;
+        final docUrl = entry.value;
+
+        // Create a new document reference for EACH file
+        final requestRef = FirebaseFirestore.instance.collection('verification_requests').doc();
+
+        // Set the data with the fields your admin panel is looking for
+        batch.set(requestRef, {
+          'userId': user.uid,
+          'userName': user.displayName ?? 'N/A',
+          'userEmail': user.email,
+          'serviceType': widget.serviceType.name,
+          'documentType': docType.name, // This is what your admin panel needs
+          'documentUrl': docUrl,      // This is the link it needs
+          'status': 'pending_review',
+          'submittedAt': FieldValue.serverTimestamp(),
+        });
+      }
+// --- END OF FIX ---
       // 2. Create or update the user's profile document
       final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
 

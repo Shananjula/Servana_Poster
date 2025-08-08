@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
-
-// Import the new models and the conversation screen
 import '../models/chat_channel_model.dart';
 import 'conversation_screen.dart';
 
@@ -18,8 +16,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
   final String _currentUserId = FirebaseAuth.instance.currentUser!.uid;
 
   void _navigateToConversation(BuildContext context, ChatChannel chatChannel) {
-    // Determine the other user's details from the chat channel
-    final otherUserId = chatChannel.participants.firstWhere((id) => id != _currentUserId, orElse: () => '');
+    // --- FIX: Use 'participantIds' instead of 'participants' ---
+    final otherUserId = chatChannel.participantIds.firstWhere((id) => id != _currentUserId, orElse: () => '');
     final otherUserName = chatChannel.participantNames[otherUserId] ?? 'Unknown User';
     final otherUserAvatar = chatChannel.participantAvatars[otherUserId];
 
@@ -30,12 +28,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
           chatChannelId: chatChannel.id,
           otherUserName: otherUserName,
           otherUserAvatarUrl: otherUserAvatar,
+          taskTitle: chatChannel.taskTitle,
         ),
       ),
     );
   }
 
-  /// Formats the timestamp for display on the chat list item.
   String _formatTimestamp(Timestamp? timestamp) {
     if (timestamp == null) return '';
     final now = DateTime.now();
@@ -43,13 +41,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final difference = now.difference(date);
 
     if (difference.inDays == 0) {
-      return DateFormat.jm().format(date); // e.g., 5:30 PM
+      return DateFormat.jm().format(date);
     } else if (difference.inDays == 1) {
       return 'Yesterday';
     } else if (difference.inDays < 7) {
-      return DateFormat.E().format(date); // e.g., Mon, Tue
+      return DateFormat.E().format(date);
     } else {
-      return DateFormat.yMd().format(date); // e.g., 6/23/2025
+      return DateFormat.yMd().format(date);
     }
   }
 
@@ -57,10 +55,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Create a query to get all chat channels the current user is a part of
+    // --- FIX: Use 'participantIds' instead of 'participants' ---
     final chatChannelsQuery = FirebaseFirestore.instance
         .collection('chats')
-        .where('participants', arrayContains: _currentUserId)
+        .where('participantIds', arrayContains: _currentUserId)
         .orderBy('lastMessageTimestamp', descending: true);
 
     return Scaffold(
@@ -97,7 +95,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
             separatorBuilder: (context, index) => const Divider(height: 0, indent: 88),
             itemBuilder: (context, index) {
               final channel = chatChannels[index];
-              final otherUserId = channel.participants.firstWhere((id) => id != _currentUserId);
+              // --- FIX: Use 'participantIds' instead of 'participants' ---
+              final otherUserId = channel.participantIds.firstWhere((id) => id != _currentUserId);
               final name = channel.participantNames[otherUserId] ?? 'Unknown User';
               final avatarUrl = channel.participantAvatars[otherUserId];
               final lastMessage = channel.lastMessage ?? 'No messages yet.';

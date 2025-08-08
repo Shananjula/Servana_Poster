@@ -61,7 +61,6 @@ class ManageOffersScreen extends StatelessWidget {
                   return const Center(child: CircularProgressIndicator());
                 }
                 if (snapshot.hasError) {
-                  print('Error loading offers: ${snapshot.error}');
                   return const Center(child: Text('An error occurred loading offers.'));
                 }
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
@@ -110,24 +109,52 @@ class OfferCard extends StatelessWidget {
     required this.currentUser,
   }) : super(key: key);
 
+  // --- UPDATED to call the new Cloud Function service ---
+  void _acceptOffer(BuildContext context) async {
+    if (task.status != 'open' && task.status != 'negotiating') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This task is no longer open for offers.')));
+      return;
+    }
+
+    try {
+      bool? confirm = await showDialog<bool>(
+        context: context,
+        builder: (BuildContext ctx) => AlertDialog(
+          title: const Text('Confirm Acceptance'),
+          content: Text('Are you sure you want to accept this offer from ${offer.helperName} for LKR ${NumberFormat("#,##0").format(offer.amount)}?'),
+          actions: <Widget>[
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Accept Offer')),
+          ],
+        ),
+      );
+
+      if (confirm != true) return;
+
+      // Call the new secure function
+      await _firestoreService.acceptOffer(task.id, offer.id);
+
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Offer from ${offer.helperName} accepted!'), backgroundColor: Colors.green));
+      _startChat(context);
+
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to accept: ${e.toString()}'), backgroundColor: Colors.red));
+    }
+  }
+
+  // (The rest of the OfferCard widget is unchanged)
   Future<void> _startChat(BuildContext context) async {
     final otherUserId = offer.helperId;
     final currentUserId = currentUser.id;
     final List<String> ids = [currentUserId, otherUserId];
     ids.sort();
 
-    // --- THIS IS THE FIX ---
-    // The chatChannelId now includes the task.id, making it consistent
-    // with the ID created by the helper in the firestore_service.
     final chatChannelId = ids.join('_${task.id}');
-
     final chatChannelDoc = FirebaseFirestore.instance.collection('chats').doc(chatChannelId);
 
-    // We still set the data to ensure the document exists if the poster initiates.
     await chatChannelDoc.set({
       'taskId': task.id,
       'taskTitle': task.title,
-      'participants': [currentUserId, otherUserId],
       'participantIds': [currentUserId, otherUserId],
       'participantNames': {
         currentUserId: currentUser.displayName ?? 'Me',
@@ -144,6 +171,7 @@ class OfferCard extends StatelessWidget {
         chatChannelId: chatChannelId,
         otherUserName: offer.helperName,
         otherUserAvatarUrl: offer.helperAvatarUrl,
+        taskTitle: task.title,
       ),
     ));
   }
@@ -217,43 +245,6 @@ class OfferCard extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer declined.')));
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to decline offer: ${e.toString()}')));
-    }
-  }
-
-  void _acceptOffer(BuildContext context) async {
-    if (task.status != 'open' && task.status != 'negotiating') {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This task is no longer open for offers.')));
-      return;
-    }
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        title: const Text('Confirm Acceptance'),
-        content: Text('Are you sure you want to accept this offer from ${offer.helperName} for LKR ${NumberFormat("#,##0").format(offer.amount)}?'),
-        actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Accept Offer')),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      final List<String> ids = [currentUser.id, offer.helperId];
-      ids.sort();
-      final chatChannelId = ids.join('_${task.id}');
-      await _firestoreService.sendActionableChatMessage(
-        chatChannelId: chatChannelId,
-        taskId: task.id,
-        senderId: currentUser.id,
-        helperId: offer.helperId,
-        text: 'I have accepted your offer of LKR ${offer.amount}.',
-        actionType: 'poster_accept',
-        offerAmount: offer.amount,
-      );
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Offer from ${offer.helperName} accepted!'), backgroundColor: Colors.green));
-      _startChat(context);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to accept offer: ${e.toString()}')));
     }
   }
 

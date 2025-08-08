@@ -23,17 +23,12 @@ class ActivityScreen extends StatefulWidget {
 class _ActivityScreenState extends State<ActivityScreen> with TickerProviderStateMixin {
   late TabController _mainTabController;
 
-  // --- UPDATED: Statuses are now grouped more logically ---
-
-  // For Helpers
   final List<String> helperNegotiationStatuses = ['negotiating'];
   final List<String> helperOngoingStatuses = ['assigned', 'en_route', 'arrived', 'in_progress', 'pending_completion', 'pending_payment', 'pending_rating'];
 
-  // For Posters
   final List<String> posterOpenStatuses = ['open', 'negotiating'];
   final List<String> posterInProgressStatuses = ['assigned', 'en_route', 'arrived', 'in_progress', 'pending_completion', 'pending_payment', 'pending_rating'];
 
-  // Common Statuses
   final List<String> completedStatuses = ['closed', 'rated'];
   final List<String> cancelledStatuses = ['cancelled'];
   final List<String> disputeStatuses = ['in_dispute'];
@@ -122,11 +117,10 @@ class _ActivityScreenState extends State<ActivityScreen> with TickerProviderStat
 class _RoleSpecificTaskView extends StatelessWidget {
   final String userId;
   final TaskRole role;
-  // --- UPDATED: Status lists are now named more clearly based on role ---
-  final List<String>? negotiationStatuses; // Nullable for Poster
-  final List<String>? ongoingStatuses;     // Nullable for Poster
-  final List<String>? openStatuses;        // Nullable for Helper
-  final List<String>? inProgressStatuses;  // Nullable for Helper
+  final List<String>? negotiationStatuses;
+  final List<String>? ongoingStatuses;
+  final List<String>? openStatuses;
+  final List<String>? inProgressStatuses;
   final List<String> completedStatuses;
   final List<String> cancelledStatuses;
   final List<String> disputeStatuses;
@@ -146,7 +140,6 @@ class _RoleSpecificTaskView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // --- DYNAMIC TABS BASED ON ROLE ---
     final List<Tab> tabs = (role == TaskRole.poster)
         ? [
       const Tab(text: 'Open for Offers'),
@@ -312,6 +305,7 @@ class TaskActivityCard extends StatelessWidget {
                 chatChannelId: chatChannelId,
                 otherUserName: task.posterName,
                 otherUserAvatarUrl: task.posterAvatarUrl,
+                taskTitle: task.title, // --- FIX ADDED HERE ---
               ),
             ));
           } else {

@@ -179,7 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Image.asset(
-                  'assets/logo.png',
+                  'assets/Gemini_Generated_Image',
                   height: 80,
                   errorBuilder: (context, error, stackTrace) => Icon(
                     Icons.task_alt_rounded,
@@ -189,7 +189,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  _isOtpSent ? 'Enter Verification Code' : 'Welcome to Helpify!',
+                  _isOtpSent ? 'Enter Verification Code' : 'Welcome to Servana!',
                   textAlign: TextAlign.center,
                   style: textTheme.headlineMedium?.copyWith(
                     color: colorScheme.primary,

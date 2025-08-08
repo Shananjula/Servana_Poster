@@ -10,10 +10,8 @@ import 'package:intl/intl.dart';
 import 'package:servana/providers/user_provider.dart';
 import 'package:servana/services/firestore_service.dart';
 import 'package:url_launcher/url_launcher.dart';
-
 import '../models/task_model.dart';
 import 'helper_public_profile_screen.dart';
-
 
 class TaskDetailsScreen extends StatefulWidget {
   final Task task;
@@ -30,6 +28,7 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
   bool _isCalculating = true;
   bool _isSubmitting = false;
 
+  // initState, _calculateDistanceAndTime, etc. remain the same
   @override
   void initState() {
     super.initState();
@@ -81,7 +80,6 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     }
   }
 
-  // --- MODIFIED: Uses the new FirestoreService ---
   Future<void> _startNegotiation({required double offerAmount, String? message}) async {
     final user = context.read<UserProvider>().user;
     if (user == null) {
@@ -91,19 +89,28 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
 
     setState(() => _isSubmitting = true);
 
-    await FirestoreService().initiateOfferAndNavigateToChat(
-      context: context,
-      task: widget.task,
-      helper: user,
-      offerAmount: offerAmount,
-      initialMessage: message,
-    );
+    // --- New: Check helper's coin balance ---
+    try {
+      if (user.servCoinBalance < 200) {
+        throw Exception("You need at least 200 Serv Coins to apply for a task.");
+      }
+
+      await FirestoreService().initiateOfferAndNavigateToChat(
+        context: context,
+        task: widget.task,
+        helper: user,
+        offerAmount: offerAmount,
+        initialMessage: message,
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+    }
+
 
     if (mounted) {
       setState(() => _isSubmitting = false);
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -141,10 +148,19 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
                   children: [
                     Text(widget.task.title, style: Theme.of(context).textTheme.headlineMedium),
                     const SizedBox(height: 16),
-                    _buildPaymentInfoCard(context, widget.task.paymentMethod),
+                    _buildPaymentInfoCard(context, widget.task.paymentMethod), // Updated to show payment method
                     const SizedBox(height: 16),
                     _buildPosterInfoCard(context),
                     const SizedBox(height: 24),
+                    if (widget.task.imageUrl != null) ...[
+                      _buildSectionHeader('Task Image'),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.network(widget.task.imageUrl!, fit: BoxFit.cover, width: double.infinity, height: 200)
+                      ),
+                      const SizedBox(height: 24),
+                    ],
                     if (!isOnlineTask)
                       _buildLocationDetailsSection(context)
                     else
@@ -164,8 +180,64 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
     );
   }
 
-  // --- UI HELPER WIDGETS ---
+  // --- New Helper Widget ---
+  Widget _buildPaymentInfoCard(BuildContext context, String paymentMethod) {
+    IconData icon;
+    String text;
+    String subtext;
+    Color color;
 
+    switch (paymentMethod) {
+      case 'cash':
+        icon = Icons.money_outlined;
+        text = 'Pay with Cash';
+        subtext = 'Payment is made directly to you upon completion.';
+        color = Colors.orange.shade700;
+        break;
+      case 'servCoins':
+        icon = Icons.monetization_on_outlined;
+        text = 'Pay with Serv Coins';
+        subtext = 'Payment is transferred to your wallet upon completion.';
+        color = Colors.green.shade700;
+        break;
+      case 'card':
+      default:
+        icon = Icons.credit_card;
+        text = 'Pay with Card (Escrow)';
+        subtext = 'Payment is held securely and released upon completion.';
+        color = Theme.of(context).primaryColor;
+    }
+
+    return Card(
+      elevation: 0,
+      color: color.withOpacity(0.1),
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: color.withOpacity(0.3)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12.0),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 30),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(text, style: Theme.of(context).textTheme.titleMedium?.copyWith(color: color, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 2),
+                  Text(subtext, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: color.withOpacity(0.9))),
+                ],
+              ),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  // All other build methods remain the same...
   Widget _buildOnlineTaskHeader() {
     return Image.network(
       widget.task.imageUrl ?? 'https://placehold.co/600x400/1e40af/white?text=Online+Task',
@@ -199,45 +271,6 @@ class _TaskDetailsScreenState extends State<TaskDetailsScreen> {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildPaymentInfoCard(BuildContext context, String paymentMethod) {
-    final isCash = paymentMethod == 'cash';
-    final theme = Theme.of(context);
-    final icon = isCash ? Icons.money_outlined : Icons.shield_outlined;
-    final text = isCash ? 'Pay with Cash' : 'Secure Escrow Payment';
-    final subtext = isCash
-        ? 'Payment is made directly to the Helper upon completion.'
-        : 'Payment is held by Helpify and released upon completion.';
-    final color = isCash ? Colors.orange.shade700 : theme.primaryColor;
-
-    return Card(
-      elevation: 0,
-      color: color.withOpacity(0.1),
-      shape: RoundedRectangleBorder(
-        side: BorderSide(color: color.withOpacity(0.3)),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Row(
-          children: [
-            Icon(icon, color: color, size: 30),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(text, style: theme.textTheme.titleMedium?.copyWith(color: color, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 2),
-                  Text(subtext, style: theme.textTheme.bodySmall?.copyWith(color: color.withOpacity(0.9))),
-                ],
-              ),
-            )
-          ],
-        ),
-      ),
     );
   }
 

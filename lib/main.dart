@@ -1,5 +1,3 @@
-// main.dart
-
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -23,8 +21,11 @@ import 'package:servana/screens/role_selection_screen.dart';
 import 'package:servana/screens/verification_status_screen.dart';
 import 'package:servana/services/notification_service.dart';
 import 'package:servana/theme/theme.dart';
-// --- NEW IMPORT FOR ONBOARDING ---
 import 'package:servana/screens/helper_onboarding_screen.dart';
+
+// --- ADD IMPORTS FOR YOUR NEW SCREENS ---
+import 'package:servana/screens/helper_profile_screen.dart';
+import 'package:servana/screens/poster_profile_screen.dart';
 
 
 // Background message handler for Firebase Messaging
@@ -44,7 +45,7 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Activate Firebase App Check for debug mode
+  // Activate Firebase App Check
   await FirebaseAppCheck.instance.activate(
     androidProvider: AndroidProvider.debug,
     appleProvider: AppleProvider.debug,
@@ -57,7 +58,6 @@ Future<void> main() async {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => UserProvider()),
-        // Provider for managing app language/locale
         ChangeNotifierProvider(create: (_) => LocaleProvider()),
       ],
       child: const MyApp(),
@@ -70,26 +70,21 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Consumer listens for locale changes to rebuild the MaterialApp
     return Consumer<LocaleProvider>(
       builder: (context, localeProvider, child) {
         return MaterialApp(
-          // Navigator key for handling notifications
           navigatorKey: NotificationService.navigatorKey,
           title: 'Servana',
           theme: AppTheme.lightTheme,
           debugShowCheckedModeBanner: false,
-
-          // --- Connect localization to the app ---
-          locale: localeProvider.locale, // Set the current language
-          supportedLocales: L10n.all, // Tell Flutter which languages are supported
+          locale: localeProvider.locale,
+          supportedLocales: L10n.all,
           localizationsDelegates: const [
-            AppLocalizations.delegate, // Your app's specific translations
-            GlobalMaterialLocalizations.delegate, // Built-in translations for Material widgets
-            GlobalWidgetsLocalizations.delegate, // For text direction
-            GlobalCupertinoLocalizations.delegate, // For iOS-style widgets
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
           ],
-
           home: const AuthWrapper(),
         );
       },
@@ -98,7 +93,8 @@ class MyApp extends StatelessWidget {
 }
 
 
-// AuthWrapper handles the authentication state and user routing
+/// The AuthWrapper is the "brain" of the app's routing.
+/// It listens to authentication state and user profile data to decide which screen to show.
 class AuthWrapper extends StatefulWidget {
   const AuthWrapper({super.key});
 
@@ -107,12 +103,31 @@ class AuthWrapper extends StatefulWidget {
 }
 
 class _AuthWrapperState extends State<AuthWrapper> {
-  // Initializes user-dependent services after a successful login
+  /// Initializes user-dependent services after a successful login.
   Future<void> _initializeServicesAfterLogin(User user) async {
-    // Check if the widget is still mounted before using context
     if (!mounted) return;
     context.read<UserProvider>().setUser(user);
     await NotificationService().initNotifications();
+  }
+
+  /// Ensures a user document exists in Firestore. This is called once upon login.
+  Future<void> _ensureUserDocumentExists(User user) async {
+    final userRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+    final snapshot = await userRef.get();
+
+    if (!snapshot.exists) {
+      await userRef.set({
+        // --- STANDARDIZED: Now correctly uses 'phone' ---
+        'phone': user.phoneNumber,
+        'createdAt': FieldValue.serverTimestamp(),
+        'status': 'active',
+        'role': null,
+        'helperProfileCompleted': false,
+        'documentsSubmitted': false,
+        'posterProfileCompleted': false,
+        'verificationStatus': 'not_started',
+      }, SetOptions(merge: true));
+    }
   }
 
   @override
@@ -120,62 +135,64 @@ class _AuthWrapperState extends State<AuthWrapper> {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnapshot) {
-        // Show a loading indicator while checking auth state
         if (authSnapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
 
         final User? user = authSnapshot.data;
 
-        // If the user is not logged in
         if (user == null) {
-          // Defer the provider call to after the build phase to avoid errors
           Future.microtask(() {
-            if (mounted) {
-              context.read<UserProvider>().clearUser();
-            }
+            if (mounted) context.read<UserProvider>().clearUser();
           });
           return const LoginScreen();
         } else {
-          // If the user is logged in, fetch their data from Firestore
-          return FutureBuilder<DocumentSnapshot>(
-            future: FirebaseFirestore.instance.collection('users').doc(user.uid).get(),
+          return StreamBuilder<DocumentSnapshot>(
+            stream: FirebaseFirestore.instance.collection('users').doc(user.uid).snapshots(),
             builder: (context, userDocSnapshot) {
-              // Show a loading indicator while fetching user data
+
               if (userDocSnapshot.connectionState == ConnectionState.waiting) {
                 return const Scaffold(body: Center(child: CircularProgressIndicator()));
               }
 
-              // Defer service initialization to prevent build-time errors
+              if (!userDocSnapshot.hasData || !userDocSnapshot.data!.exists) {
+                _ensureUserDocumentExists(user);
+                return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              }
+
               Future.microtask(() => _initializeServicesAfterLogin(user));
 
-              // --- UPDATED User Routing Logic ---
-              final userData = userDocSnapshot.data?.data() as Map<String, dynamic>? ?? {};
-              final hasCompletedRoleSelection = userData['hasCompletedRoleSelection'] == true;
-              final isHelper = userData['isHelper'] == true;
-              final verificationStatus = userData['verificationStatus'] as String?;
-              // Make sure to get the new onboardingStep field!
-              final onboardingStep = userData['onboardingStep'] as int? ?? 0;
+              final userData = userDocSnapshot.data!.data() as Map<String, dynamic>;
 
-              // --- NEW User Routing Logic for Servana ---
+              final String? role = userData['role'];
 
-              // 1. If role not selected, go to RoleSelectionScreen.
-              if (!hasCompletedRoleSelection) {
+              if (role == null) {
                 return const RoleSelectionScreen();
               }
 
-              // 2. If user IS a helper but has NOT completed onboarding, send them to the pipeline.
-              //    We check if the step is less than the final step number (which is 3).
-              if (isHelper && onboardingStep < 3) {
-                return const HelperOnboardingScreen();
+              if (role == 'helper') {
+                final bool profileCompleted = userData['helperProfileCompleted'] == true;
+                final bool docsSubmitted = userData['documentsSubmitted'] == true;
+                final String verificationStatus = userData['verificationStatus'] ?? 'not_started';
+
+                if (!profileCompleted) {
+                  return const HelperProfileScreen();
+                }
+                if (!docsSubmitted) {
+                  return const HelperOnboardingScreen();
+                }
+                if (verificationStatus != 'verified') {
+                  return const VerificationStatusScreen();
+                }
               }
 
-              // 3. If user IS a helper, has finished onboarding, but is not yet verified, show status.
-              if (isHelper && verificationStatus != 'verified') {
-                return const VerificationStatusScreen();
+              if (role == 'poster') {
+                final bool profileCompleted = userData['posterProfileCompleted'] == true;
+                if (!profileCompleted) {
+                  return const PosterProfileScreen();
+                }
               }
 
-              // 4. If all checks pass, they are a verified helper or a poster. Go to HomeScreen.
               return const HomeScreen();
             },
           );

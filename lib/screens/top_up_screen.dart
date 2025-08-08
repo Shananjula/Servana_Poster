@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:servana/models/transaction_model.dart';
 import 'package:intl/intl.dart';
 
 class TopUpScreen extends StatefulWidget {
@@ -25,28 +26,39 @@ class _TopUpScreenState extends State<TopUpScreen> {
 
     setState(() => _isProcessing = true);
 
-    // --- MOCK PAYMENT GATEWAY ---
-    // In a real app, you would integrate the Payhere SDK here.
-    // We will simulate a successful payment after a 3-second delay.
-    await Future.delayed(const Duration(seconds: 3));
+    // Simulate payment gateway delay
+    await Future.delayed(const Duration(seconds: 2));
 
     try {
       final user = FirebaseAuth.instance.currentUser;
       if (user == null) throw Exception("You are not logged in.");
 
       final userDocRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
+      final transactionRef = userDocRef.collection('transactions').doc();
 
-      // Use FieldValue.increment to safely add to the user's balance.
-      await userDocRef.update({
-        'coinWalletBalance': FieldValue.increment(_selectedAmount!),
+      // Use a WriteBatch for an atomic operation
+      final writeBatch = FirebaseFirestore.instance.batch();
+
+      // 1. Update the user's wallet balance
+      writeBatch.update(userDocRef, {
+        'servCoinBalance': FieldValue.increment(_selectedAmount!),
       });
 
-      // TODO: Create a document in a `transactions` collection for accounting.
+      // 2. Create a transaction record
+      writeBatch.set(transactionRef, {
+        'amount': _selectedAmount!,
+        'type': TransactionType.topUp.name,
+        'description': 'Wallet Top-Up',
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      // Commit both operations together
+      await writeBatch.commit();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Successfully topped up ${_selectedAmount!} Coins!'),
+            content: Text('Successfully topped up ${_selectedAmount!} Serv Coins!'),
             backgroundColor: Colors.green,
           ),
         );
@@ -86,7 +98,7 @@ class _TopUpScreenState extends State<TopUpScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              '1 LKR = 1 Helpify Coin. Your wallet balance is used to pay platform commissions.',
+              '1 LKR = 1 Serv Coin. Your wallet balance is used to pay platform commissions.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyLarge?.copyWith(color: Colors.grey[600]),
             ),

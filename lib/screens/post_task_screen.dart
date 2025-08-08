@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:servana/models/user_model.dart';
 import 'package:servana/services/ai_service.dart';
+import 'package:servana/services/firestore_service.dart'; // Import the service
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:geolocator/geolocator.dart';
@@ -12,6 +14,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'map_picker_screen.dart';
 
 enum TaskType { physical, online }
+enum PaymentMethod { cash, card, servCoins }
 
 class PostTaskScreen extends StatefulWidget {
   const PostTaskScreen({Key? key}) : super(key: key);
@@ -26,24 +29,24 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
   final _descriptionController = TextEditingController();
   final _budgetController = TextEditingController();
 
-  // --- AI: State for suggestions ---
+  // Add a reference to your service
+  final FirestoreService _firestoreService = FirestoreService();
+
+  // State variables remain the same
   bool _isGeneratingSuggestions = false;
   String? _suggestedBudget;
   Timer? _debounce;
-
   TaskType _selectedTaskType = TaskType.physical;
+  PaymentMethod _selectedPaymentMethod = PaymentMethod.card;
   String? _selectedCategory;
   String? _selectedSubCategory;
-
   XFile? _imageFile;
   String? _imageUrl;
   GeoPoint? _selectedLocation;
   String _locationAddress = 'No location selected';
-
   bool _isSubmitting = false;
   bool _isFetchingLocation = false;
   bool _isUploadingImage = false;
-
   final Map<String, List<String>> _categories = {
     'Home & Garden': ['Plumbing', 'Handyman', 'Gardening', 'Cleaning', 'Moving', 'Appliance Repair'],
     'Digital & Online': ['Graphic & Design', 'Writing & Translation', 'Digital Marketing', 'Tech & Programming', 'Data Entry'],
@@ -82,14 +85,12 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
         if(_descriptionController.text.trim().isEmpty) {
           _descriptionController.text = suggestions['description'] ?? '';
         }
-
         final suggestedCategory = suggestions['category'];
         if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
           _selectedCategory = suggestedCategory;
           _subCategories = _categories[suggestedCategory] ?? [];
           _selectedSubCategory = null;
         }
-
         final budget = suggestions['budget'];
         if(budget != null) {
           _suggestedBudget = budget.toString();
@@ -102,22 +103,18 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
   Future<void> _generateTaskFromImage() async {
     if (_imageFile == null) return;
     setState(() => _isGeneratingSuggestions = true);
-
     final imageData = await _imageFile!.readAsBytes();
     final suggestions = await AiService.generateTaskFromImage(_titleController.text.trim(), imageData);
-
     if(suggestions != null && mounted) {
       setState(() {
         _titleController.text = suggestions['title'] ?? _titleController.text;
         _descriptionController.text = suggestions['description'] ?? _descriptionController.text;
-
         final suggestedCategory = suggestions['category'];
         if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
           _selectedCategory = suggestedCategory;
           _subCategories = _categories[suggestedCategory] ?? [];
           _selectedSubCategory = null;
         }
-
         final budget = suggestions['budget'];
         if (budget != null) {
           _suggestedBudget = budget;
@@ -128,6 +125,7 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     setState(() => _isGeneratingSuggestions = false);
   }
 
+  // --- THIS FUNCTION IS NOW SIMPLIFIED ---
   Future<void> _submitTask() async {
     if (!_formKey.currentState!.validate()) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all required fields.')));
@@ -144,13 +142,23 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     setState(() => _isSubmitting = true);
 
     try {
+      // First, check the user's balance to avoid unnecessary uploads
+      const double postingFee = 10.0;
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final userData = HelpifyUser.fromFirestore(userDoc);
+
+      if (userData.servCoinBalance < 100) {
+        throw Exception('You need at least 100 Serv Coins to post a task.');
+      }
+      if (userData.servCoinBalance < postingFee) {
+        throw Exception('Insufficient Serv Coins. You need $postingFee coins to post.');
+      }
+
+      // Upload image if it exists
       if (_imageFile != null) {
         setState(() => _isUploadingImage = true);
         final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final ref = FirebaseStorage.instance.ref()
-            .child('task_images')
-            .child(user.uid)
-            .child(fileName);
+        final ref = FirebaseStorage.instance.ref().child('task_images').child(user.uid).child(fileName);
         await ref.putFile(File(_imageFile!.path));
         _imageUrl = await ref.getDownloadURL();
         setState(() => _isUploadingImage = false);
@@ -158,6 +166,7 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
 
       final budget = double.tryParse(_budgetController.text) ?? 0.0;
 
+      // Prepare the data map
       final taskData = {
         'taskType': _selectedTaskType.name,
         'title': _titleController.text.trim(),
@@ -168,30 +177,31 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
         'locationAddress': _selectedTaskType == TaskType.physical ? _locationAddress : null,
         'budget': budget,
         'imageUrl': _imageUrl,
-        'paymentMethod': 'escrow',
-        'isCommissionFree': true,
+        'paymentMethod': _selectedPaymentMethod.name,
         'posterId': user.uid,
         'posterName': user.displayName ?? 'Helpify User',
         'posterAvatarUrl': user.photoURL ?? '',
         'status': 'open',
         'timestamp': FieldValue.serverTimestamp(),
-        // --- THIS IS THE FIX ---
-        // This ensures the poster is a participant in their own task from the start.
         'participantIds': [user.uid],
       };
 
-      await FirebaseFirestore.instance.collection('tasks').add(taskData);
+      // Call the centralized service function
+      await _firestoreService.postNewTask(
+        taskData: taskData,
+        postingFee: postingFee,
+      );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Task posted successfully!'), backgroundColor: Colors.green),
+          SnackBar(content: Text('Task posted successfully! $postingFee coins deducted.'), backgroundColor: Colors.green),
         );
         Navigator.of(context).pop();
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error posting task: ${e.toString()}'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -199,6 +209,7 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
     }
   }
 
+  // Location functions and build method remain the same...
   Future<void> _getCurrentLocation() async {
     setState(() => _isFetchingLocation = true);
     try {
@@ -292,7 +303,9 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
                 _buildLocationInput(),
               ],
               const SizedBox(height: 24),
-              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '4. Details' : '3. Details'),
+              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '4. Payment & Details' : '3. Payment & Details'),
+              _buildPaymentMethodSelector(),
+              const SizedBox(height: 16),
               _buildCategorySelectors(),
               const SizedBox(height: 16),
               TextFormField(
@@ -311,6 +324,37 @@ class _PostTaskScreenState extends State<PostTaskScreen> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildPaymentMethodSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8.0),
+          child: Text("How will you pay?", style: Theme.of(context).textTheme.titleMedium),
+        ),
+        SegmentedButton<PaymentMethod>(
+          style: SegmentedButton.styleFrom(
+            foregroundColor: Theme.of(context).textTheme.bodyLarge?.color,
+            selectedForegroundColor: Theme.of(context).colorScheme.onPrimary,
+            selectedBackgroundColor: Theme.of(context).colorScheme.primary,
+          ),
+          segments: const <ButtonSegment<PaymentMethod>>[
+            ButtonSegment<PaymentMethod>(value: PaymentMethod.card, label: Text('Card'), icon: Icon(Icons.credit_card)),
+            ButtonSegment<PaymentMethod>(value: PaymentMethod.cash, label: Text('Cash'), icon: Icon(Icons.money_outlined)),
+            ButtonSegment<PaymentMethod>(value: PaymentMethod.servCoins, label: Text('Serv Coins'), icon: Icon(Icons.monetization_on_outlined)),
+          ],
+          selected: <PaymentMethod>{_selectedPaymentMethod},
+          onSelectionChanged: (Set<PaymentMethod> newSelection) {
+            setState(() {
+              _selectedPaymentMethod = newSelection.first;
+            });
+          },
+        ),
+        const SizedBox(height: 16),
+      ],
     );
   }
 

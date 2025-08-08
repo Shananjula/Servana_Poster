@@ -1,55 +1,116 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:servana/providers/user_provider.dart';
-import 'package:servana/screens/home_screen.dart'; // <-- IMPORT HOME SCREEN
+import 'package:servana/screens/home_screen.dart';
 import 'package:servana/widgets/empty_state_widget.dart';
-import 'package:servana/screens/service_selection_screen.dart';
+import 'package:servana/screens/helper_onboarding_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:servana/services/firestore_service.dart';
 
 class VerificationStatusScreen extends StatelessWidget {
   const VerificationStatusScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Get the user's status from the UserProvider for real-time updates
-    final userStatus = Provider.of<UserProvider>(context).user?.verificationStatus ?? 'not_verified';
+    final userProvider = context.watch<UserProvider>();
+    final userStatus = userProvider.user?.verificationStatus ?? 'not_verified';
+    final interviewStatus = userProvider.user?.interviewStatus;
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Verification Status'),
+        automaticallyImplyLeading: false,
+        actions: [
+          if (userStatus == 'pending')
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Logout',
+              onPressed: () async {
+                await FirebaseAuth.instance.signOut();
+              },
+            ),
+        ],
       ),
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
-          child: _buildContentForStatus(context, userStatus, theme),
+          child: _buildContentForStatus(context, userStatus, interviewStatus, theme),
         ),
       ),
     );
   }
 
-  // This widget displays the correct status message and provides an action button if needed.
-  Widget _buildContentForStatus(BuildContext context, String status, ThemeData theme) {
+  Widget _buildContentForStatus(BuildContext context, String status, String? interviewStatus, ThemeData theme) {
+    final FirestoreService firestoreService = FirestoreService();
+
     switch (status) {
       case 'verified':
-      // --- THIS IS THE PRIMARY CHANGE ---
-      // When verified, show a success message and a button to proceed.
-        return EmptyStateWidget(
-          icon: Icons.verified_user,
-          title: "You're Verified!",
-          message: "Congratulations, you are a trusted member of the Servana community.",
-          actionButton: ElevatedButton.icon(
-            icon: const Icon(Icons.dashboard_customize_outlined),
-            label: const Text('Go to Helper Dashboard'),
-            onPressed: () {
-              // 1. Set the app mode to Helper
-              context.read<UserProvider>().setMode(AppMode.helper);
+        Widget proHelperSection;
 
-              // 2. Navigate to the home screen and remove all previous routes
-              Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const HomeScreen()),
-                    (Route<dynamic> route) => false,
-              );
-            },
+        switch (interviewStatus) {
+          case 'completed':
+            final score = context.read<UserProvider>().user?.interviewScore ?? 0;
+            proHelperSection = EmptyStateWidget(
+              icon: Icons.workspace_premium,
+              title: "Congratulations! You are a Servana Pro Helper!",
+              message: "You have successfully completed the interview process. Your score was $score/100.",
+            );
+            break;
+          case 'requested':
+            proHelperSection = const EmptyStateWidget(
+              icon: Icons.pending_actions_rounded,
+              title: "Interview Request Sent",
+              message: "We've received your request. Our team will contact you shortly to schedule your interview.",
+            );
+            break;
+          default: // 'none' or null
+            proHelperSection = EmptyStateWidget(
+              icon: Icons.video_call_outlined,
+              title: "Become a Servana Pro!",
+              message: "Take the next step. Request a video interview with our team to earn the 'Pro' badge and build more trust.",
+              actionButton: ElevatedButton.icon(
+                icon: const Icon(Icons.video_call_outlined),
+                label: const Text('Request Interview'),
+                onPressed: () async {
+                  try {
+                    await firestoreService.requestProInterview();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Interview request sent successfully!'), backgroundColor: Colors.green),
+                    );
+                  } catch (e) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Failed to send request: $e'), backgroundColor: Colors.red),
+                    );
+                  }
+                },
+              ),
+            );
+        }
+
+        return SingleChildScrollView(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              EmptyStateWidget(
+                icon: Icons.verified_user,
+                title: "You're Verified!",
+                message: "You are a trusted member of the Servana community.",
+                actionButton: ElevatedButton.icon(
+                  icon: const Icon(Icons.dashboard_customize_outlined),
+                  label: const Text('Go to Helper Dashboard'),
+                  onPressed: () {
+                    context.read<UserProvider>().setMode(AppMode.helper);
+                    Navigator.of(context).pushAndRemoveUntil(
+                      MaterialPageRoute(builder: (_) => const HomeScreen()),
+                          (Route<dynamic> route) => false,
+                    );
+                  },
+                ),
+              ),
+              const Divider(height: 48, thickness: 1, indent: 20, endIndent: 20),
+              proHelperSection,
+            ],
           ),
         );
       case 'pending':
@@ -62,32 +123,26 @@ class VerificationStatusScreen extends StatelessWidget {
         return EmptyStateWidget(
           icon: Icons.error_outline_rounded,
           title: "Submission Rejected",
-          message: "There was an issue with your previous submission. Please upload clear, valid documents.",
+          message: "There was an issue with your previous submission. Please check your email for details and re-submit your documents.",
           actionButton: ElevatedButton.icon(
             icon: const Icon(Icons.upload_file_outlined),
             label: const Text('Re-submit Documents'),
             style: ElevatedButton.styleFrom(backgroundColor: theme.colorScheme.error),
             onPressed: () {
-              Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const ServiceSelectionScreen(),
+              Navigator.of(context).pushReplacement(MaterialPageRoute(
+                builder: (_) => const HelperOnboardingScreen(),
               ));
             },
           ),
         );
-      case 'not_verified':
       default:
         return EmptyStateWidget(
           icon: Icons.shield_outlined,
-          title: "Become a Trusted Member",
-          message: "Verify your profile to unlock full access to Helper features and build trust within the community.",
-          actionButton: ElevatedButton.icon(
-            icon: const Icon(Icons.arrow_forward_rounded),
-            label: const Text('Start Verification Process'),
-            onPressed: () {
-              Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => const ServiceSelectionScreen(),
-              ));
-            },
+          title: "Verification Required",
+          message: "There was an issue loading your status. Please restart the app.",
+          actionButton: ElevatedButton(
+            child: const Text('Logout'),
+            onPressed: () => FirebaseAuth.instance.signOut(),
           ),
         );
     }

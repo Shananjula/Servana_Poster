@@ -17,10 +17,12 @@ class UserProvider with ChangeNotifier {
 
   HelpifyUser? get user => _user;
   AppMode get activeMode => _activeMode; // Getter for the active mode
-  bool get isVerifiedHelper => _user?.isHelper == true && _user?.verificationStatus == 'verified';
+  bool get isVerifiedHelper =>
+      _user?.isHelper == true && _user?.verificationStatus == 'verified';
 
   /// Sets the initial Firebase user and starts listening for real-time updates.
   void setUser(User firebaseUser) {
+    // Avoid re-subscribing if the user is already being listened to.
     if (_user?.id == firebaseUser.uid) return;
 
     _userSubscription?.cancel();
@@ -31,21 +33,27 @@ class UserProvider with ChangeNotifier {
         .snapshots()
         .listen((snapshot) {
       if (snapshot.exists) {
+        // --- ⭐️ FIX: Check if this is the first time loading the user ---
+        final bool isInitialLoad = _user == null;
+
+        // Always update the user data with the latest from Firestore
         _user = HelpifyUser.fromFirestore(snapshot);
 
-        // Set default active mode based on user role
-        // If the user is a registered helper, default their view to Helper Mode.
-        // Otherwise, they are a poster.
-        if (_user?.isHelper == true) {
-          // Only switch to helper mode by default if they are already verified.
-          // If they are pending, they should start in poster mode.
-          if (_user?.verificationStatus == 'verified') {
-            _activeMode = AppMode.helper;
+        // --- ⭐️ FIX: Only set the default mode on the initial load ---
+        // This prevents the mode from toggling when other user data (like
+        // servCoinBalance) changes. The mode will now only change when the
+        // user explicitly switches it.
+        if (isInitialLoad) {
+          if (_user?.isHelper == true) {
+            // Default to helper mode only if they are verified.
+            if (_user?.verificationStatus == 'verified') {
+              _activeMode = AppMode.helper;
+            } else {
+              _activeMode = AppMode.poster;
+            }
           } else {
             _activeMode = AppMode.poster;
           }
-        } else {
-          _activeMode = AppMode.poster;
         }
 
         notifyListeners();
@@ -65,7 +73,6 @@ class UserProvider with ChangeNotifier {
     }
   }
 
-
   /// Method to toggle the active mode
   void switchMode() {
     // This method can only be triggered by a registered helper.
@@ -77,7 +84,6 @@ class UserProvider with ChangeNotifier {
     }
     notifyListeners();
   }
-
 
   /// Clears user data on logout.
   void clearUser() {

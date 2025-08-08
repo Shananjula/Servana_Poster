@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:servana/models/user_model.dart';
-import 'package:servana/screens/profile_screen.dart';
+// --- FIX: Import the correct public profile screen ---
+import 'package:servana/screens/helper_public_profile_screen.dart';
 
 class RecommendedHelperCard extends StatelessWidget {
   final HelpifyUser helper;
@@ -13,7 +14,8 @@ class RecommendedHelperCard extends StatelessWidget {
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => ProfileScreen(userId: helper.id))),
+        // --- FIX: Changed ProfileScreen to HelperPublicProfileScreen ---
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => HelperPublicProfileScreen(helperId: helper.id))),
         child: Container(
             width: 160,
             padding: const EdgeInsets.all(12),

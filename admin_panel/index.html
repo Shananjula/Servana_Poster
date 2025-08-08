@@ -78,6 +78,7 @@
             <a href="#" data-target="users" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197m0 0A10.004 10.004 0 003 15"></path></svg>Users</a>
             <a href="#" data-target="tasks" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path></svg>Tasks</a>
             <a href="#" data-target="verification" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>Verification</a>
+            <a href="#" data-target="interviews" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 01.865-.501 48.172 48.172 0 003.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z" /></svg>Interviews</a>
             <a href="#" data-target="reports" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9"></path></svg>Reports</a>
             <a href="#" data-target="community-watch" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>Community Watch</a>
             <a href="#" data-target="settings" class="nav-link flex items-center p-3 text-lg text-gray-600 hover:bg-gray-100 rounded-lg"><svg class="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>Settings</a>
@@ -111,19 +112,17 @@
 
 <script type="module">
     // --- Firebase Configuration ---
-    // IMPORTANT: Replace with your actual Firebase project configuration.
     const firebaseConfig = {
-  apiKey: "AIzaSyBS02g3Gtbz_v_cw9KxOffknGQGsvZKK_s",
-  authDomain: "helpify-flutter.firebaseapp.com",
-  projectId: "helpify-flutter",
-  storageBucket: "helpify-flutter.firebasestorage.app",
-  messagingSenderId: "657614790732",
-  appId: "1:657614790732:web:952d8c55eea79bd77614e9",
-  measurementId: "G-L51PN5NVM2"
+      apiKey: "AIzaSyBS02g3Gtbz_v_cw9KxOffknGQGsvZKK_s",
+      authDomain: "helpify-flutter.firebaseapp.com",
+      projectId: "helpify-flutter",
+      storageBucket: "helpify-flutter.firebasestorage.app",
+      messagingSenderId: "657614790732",
+      appId: "1:657614790732:web:952d8c55eea79bd77614e9",
+      measurementId: "G-L51PN5NVM2"
     };
 
     // --- Gemini API Configuration ---
-    // IMPORTANT: Replace with your actual Gemini API Key.
     const GEMINI_API_KEY = "AIzaSyBp4DPWJ1VgynLc-4NCcTHMdYJmmQxsnx0";
 
     // --- Initialize Firebase ---
@@ -138,6 +137,7 @@
         tasks: [],
         verifications: [],
         reports: [],
+        interviews: [],
         settings: {}
     };
     let listeners = [];
@@ -223,6 +223,7 @@
             tasks: db.collection('tasks').orderBy('timestamp', 'desc'),
             verifications: db.collection('verification_requests').orderBy('submittedAt', 'desc'),
             reports: db.collection('reports').orderBy('reportedAt', 'desc'),
+            interviews: db.collection('interviewRequests').where('status', '==', 'pending').orderBy('requestTimestamp', 'desc'),
             settings: db.collection('settings').doc('platform')
         };
         Object.keys(collectionsToListen).forEach(key => {
@@ -284,6 +285,7 @@
                 case 'users': renderUsers(); break;
                 case 'tasks': renderTasks(); break;
                 case 'verification': renderVerifications(); break;
+                case 'interviews': renderInterviews(); break;
                 case 'reports': renderReports(); break;
                 case 'community-watch': renderCommunityWatch(); break;
                 case 'settings': renderSettings(); break;
@@ -534,6 +536,23 @@
             </tr>`).join('');
     }
 
+    function renderInterviews() {
+         mainContent.innerHTML = `
+            <h1 class="text-4xl font-bold mb-8">Interview Requests</h1>
+            <div class="bg-white shadow rounded-lg overflow-hidden">
+                <table class="min-w-full leading-normal"><thead class="border-b-2 border-gray-200 bg-gray-100 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider"><tr><th class="px-5 py-3">User Name</th><th class="px-5 py-3">User ID</th><th class="px-5 py-3">Requested At</th><th class="px-5 py-3">Actions</th></tr></thead><tbody id="interview-table-body"></tbody></table>
+            </div>`;
+        const tbody = document.getElementById('interview-table-body');
+        if (state.interviews.length === 0) return renderEmptyState(tbody, 4, "No pending interview requests.");
+        tbody.innerHTML = state.interviews.map(interview => `
+            <tr class="border-b border-gray-200 hover:bg-gray-50">
+                <td class="px-5 py-4">${interview.userName || 'N/A'}</td>
+                <td class="px-5 py-4 text-xs font-mono">${interview.userId}</td>
+                <td class="px-5 py-4">${formatDate(interview.requestTimestamp)}</td>
+                <td class="px-5 py-4"><button class="text-teal-600 hover:text-teal-800 font-semibold" data-action="viewInterview" data-id="${interview.userId}">Review</button></td>
+            </tr>`).join('');
+    }
+
     function renderReports() {
         mainContent.innerHTML = `
             <h1 class="text-4xl font-bold mb-8">Content Reports</h1>
@@ -640,10 +659,11 @@
                 if (newStatus === 'approved') {
                     let scoreIncrement = 10;
                     let verificationLevel = 'bronze';
-                    if (data.documentType === 'NIC') {
+                    if (data.documents && data.documents.nicFrontUrl) {
                         scoreIncrement = 25;
                         verificationLevel = 'silver';
-                    } else if (data.documentType === 'Police Clearance') {
+                    }
+                    if (data.documents && data.documents.policeClearanceUrl) {
                         scoreIncrement = 40;
                         verificationLevel = 'gold';
                     }
@@ -662,6 +682,38 @@
         } catch (error) {
             console.error("Error handling verification:", error);
             showToast(`Failed to update status: ${error.message}`, true);
+        }
+    }
+
+    // Replace the old handleInterviewAction function with this one
+    async function handleInterviewAction(userId, action) {
+        const interviewRef = db.collection("interviewRequests").doc(userId);
+        const userRef = db.collection("users").doc(userId);
+        try {
+            const batch = db.batch();
+            if (action === 'complete') {
+                // Get the score from the input field in the modal
+                const score = Number(document.getElementById('interview-score')?.value || 0);
+
+                batch.update(interviewRef, { status: 'completed' });
+                batch.update(userRef, {
+                    interviewStatus: 'completed',
+                    interviewScore: score, // Save the score
+                    badges: firebase.firestore.FieldValue.arrayUnion('Pro Helper'), // Add the badge
+                    trustScore: firebase.firestore.FieldValue.increment(50),
+                });
+                showToast('Interview marked as complete. User awarded "Pro Helper" badge.');
+
+            } else if (action === 'dismiss') {
+                batch.update(interviewRef, { status: 'dismissed' });
+                batch.update(userRef, { interviewStatus: 'none' });
+                showToast('Interview request dismissed.');
+            }
+            await batch.commit();
+            hideModal();
+        } catch (error) {
+            console.error(`Error performing action ${action}:`, error);
+            showToast(`Failed to ${action} interview request.`, true);
         }
     }
 
@@ -838,11 +890,34 @@
             case 'viewVerification':
                 const verification = state.verifications.find(v => v.id === id);
                 if (!verification) return;
+                const docs = verification.documents;
+                let imagesHTML = '<p class="text-gray-500">No documents found in this request.</p>';
+                if (docs && typeof docs === 'object') {
+                    imagesHTML = Object.keys(docs).map(key => {
+                        const url = docs[key];
+                        if (!url) return '';
+                        const title = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                        return `<div class="mb-4">
+                                    <p class="font-semibold">${title}:</p>
+                                    <a href="${url}" target="_blank" rel="noopener noreferrer">
+                                        <img src="${url}" alt="${title}" class="w-full h-auto rounded-lg border mt-1"/>
+                                    </a>
+                                </div>`;
+                    }).join('');
+                } else if (verification.documentUrl) {
+                    imagesHTML = `<div class="mb-4">
+                                    <p class="font-semibold">Document:</p>
+                                    <a href="${verification.documentUrl}" target="_blank" rel="noopener noreferrer">
+                                        <img src="${verification.documentUrl}" alt="Verification Document" class="w-full h-auto rounded-lg border mt-1"/>
+                                    </a>
+                                </div>`;
+                }
+
                 showModal('Review Verification',
                     `<p><strong>User:</strong> ${verification.userName} (${verification.userId})</p>
                      <p><strong>Document Type:</strong> ${verification.documentType}</p>
                      <p><strong>Submitted:</strong> ${formatDate(verification.submittedAt)}</p>
-                     <div class="mt-4"><p><strong>Document:</strong></p><a href="${verification.documentUrl}" target="_blank" rel="noopener noreferrer"><img src="${verification.documentUrl}" alt="Verification Document" class="w-full h-auto rounded-lg border"/></a></div>`,
+                     <div class="mt-4">${imagesHTML}</div>`,
                     `<button data-action="rejectVerification" data-id="${id}" class="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600">Reject</button>
                      <button data-action="approveVerification" data-id="${id}" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600">Approve</button>`
                 );
@@ -853,6 +928,34 @@
                 targetElement.textContent = 'Processing...';
                 const newStatus = action === 'approveVerification' ? 'approved' : 'rejected';
                 await handleVerificationAction(id, newStatus);
+                break;
+            // Replace the old 'viewInterview' case with this one
+            case 'viewInterview':
+                const interview = state.interviews.find(i => i.userId === id);
+                const userForInterview = state.users.find(u => u.id === id);
+                if (!interview || !userForInterview) return;
+                showModal(`Interview Request: ${userForInterview.displayName}`,
+                    `<div class="space-y-4">
+                        <div>
+                            <p><strong>User Name:</strong> ${userForInterview.displayName}</p>
+                            <p><strong>Phone:</strong> ${userForInterview.phoneNumber || 'N/A'}</p>
+                            <p><strong>Requested At:</strong> ${formatDate(interview.requestTimestamp)}</p>
+                            <a href="#" data-action="viewUser" data-id="${id}" class="text-teal-600 font-semibold hover:underline">View Full User Profile &rarr;</a>
+                        </div>
+                        <div>
+                            <label for="interview-score" class="block text-sm font-medium text-gray-700">Interview Score (out of 100)</label>
+                            <input type="number" id="interview-score" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm" placeholder="e.g., 85">
+                        </div>
+                    </div>`,
+                    `<button data-action="dismissInterview" data-id="${id}" class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600">Dismiss</button>
+                     <button data-action="completeInterview" data-id="${id}" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600">Mark as Completed</button>`
+                );
+                break;
+            case 'completeInterview':
+                await handleInterviewAction(id, 'complete');
+                break;
+            case 'dismissInterview':
+                await handleInterviewAction(id, 'dismiss');
                 break;
             case 'viewReport':
                 const report = state.reports.find(r => r.id === id);

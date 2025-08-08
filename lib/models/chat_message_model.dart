@@ -9,9 +9,9 @@ class ChatMessage {
   final String? imageUrl;
   final bool? isFlagged;
 
-  // --- NEW: Fields for handling offers ---
   final double? offerAmount;
-  final String? offerStatus; // e.g., 'pending', 'accepted', 'rejected'
+  final String? offerStatus;
+  final String? offerId; // --- ADDED THIS LINE ---
 
   ChatMessage({
     required this.id,
@@ -21,9 +21,9 @@ class ChatMessage {
     this.type = 'text',
     this.imageUrl,
     this.isFlagged,
-    // --- NEW: Added to constructor ---
     this.offerAmount,
     this.offerStatus,
+    this.offerId, // --- ADDED THIS LINE ---
   });
 
   factory ChatMessage.fromFirestore(DocumentSnapshot<Map<String, dynamic>> snapshot) {
@@ -36,9 +36,9 @@ class ChatMessage {
       type: data['type'] as String? ?? 'text',
       imageUrl: data['imageUrl'] as String?,
       isFlagged: data['isFlagged'] as bool?,
-      // --- NEW: Reading from Firestore ---
       offerAmount: (data['offerAmount'] as num?)?.toDouble(),
       offerStatus: data['offerStatus'] as String?,
+      offerId: data['offerId'] as String?, // --- ADDED THIS LINE ---
     );
   }
 }

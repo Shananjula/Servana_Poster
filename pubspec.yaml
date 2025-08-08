@@ -19,7 +19,7 @@ dependencies:
   firebase_storage: ^12.4.8
   firebase_messaging: ^15.2.8
   firebase_app_check: ^0.3.2+8
-
+  cloud_functions: ^5.6.1
   # --- AI & Services ---
   google_generative_ai: ^0.4.3
   flutter_dotenv: ^5.1.0
@@ -29,13 +29,14 @@ dependencies:
   cupertino_icons: ^1.0.6
   intl: ^0.20.2
   percent_indicator: ^4.2.3
-  flutter_animate: ^4.5.0
+  flutter_animate: ^4.5.2
 
   # --- Device & Location ---
   google_maps_flutter: ^2.7.0
   geolocator: ^14.0.2
   geocoding: ^4.0.0
   image_picker: ^1.1.2
+  path: ^1.9.0
 
   # --- Utilities & State Management ---
   url_launcher: ^6.3.1

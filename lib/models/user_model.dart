@@ -1,7 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// --- NEW ---
-/// Enum for tiered verification to provide a structured and clear status.
 enum VerificationTier { none, bronze, silver, gold }
 
 class HelpifyUser {
@@ -9,12 +7,11 @@ class HelpifyUser {
   final String? displayName;
   final String? email;
   final String? photoURL;
-  final String? phoneNumber;
+  final String? phone; // <-- UPDATED from phoneNumber
   final String? bio;
   final bool? isHelper;
-  final bool isLive; // For "Task Radio" feature
+  final bool isLive;
 
-  // --- UPDATED: Helper-specific fields ---
   final String? qualifications;
   final String? experience;
   final List<String> skills;
@@ -22,11 +19,12 @@ class HelpifyUser {
   final double? hourlyRate;
   final int trustScore;
 
-  // --- NEW: For helper map view and service areas ---
+  final List<String> portfolioImageUrls;
+  final String? videoIntroUrl;
+
   final GeoPoint? workLocation;
   final String? workLocationAddress;
 
-  // User ratings and task history
   final int ratingCount;
   final double averageRating;
   final int cancellationCount;
@@ -34,28 +32,25 @@ class HelpifyUser {
   final int commissionFreeTasksCompleted;
   final int bonusTasksAvailable;
 
-  // --- NEW: Monetization & Subscription ---
   final bool isProMember;
   final Timestamp? proMembershipExpiry;
 
-  // Wallet & Credit System Fields
-  final double coinWalletBalance;
+  final double servCoinBalance;
   final double creditCoinBalance;
   final bool initialCreditGranted;
 
-  // --- UPDATED: Verification System ---
-  final String verificationStatus; // e.g., 'not_verified', 'pending', 'rejected', 'verified'
+  final String verificationStatus;
   final VerificationTier verificationTier;
 
-  // --- NEW: Onboarding and Document Fields ---
-  final int onboardingStep; // Tracks which step they are on (0, 1, 2, etc.)
+  final String? interviewStatus;
+  final int? interviewScore;
+
+  final int onboardingStep;
   final String? nicFrontUrl;
   final String? nicBackUrl;
   final String? policeClearanceUrl;
   final String? proofOfAddressUrl;
-  // Add other document URLs as needed (e.g., drivingLicenseUrl)
 
-  // Calculated property for profile completion
   final double profileCompletion;
 
   HelpifyUser({
@@ -63,7 +58,7 @@ class HelpifyUser {
     this.displayName,
     this.email,
     this.photoURL,
-    this.phoneNumber,
+    this.phone, // <-- UPDATED from phoneNumber
     this.bio,
     this.isHelper,
     this.isLive = false,
@@ -83,26 +78,30 @@ class HelpifyUser {
     this.commissionFreeTasksPosted = 0,
     this.commissionFreeTasksCompleted = 0,
     this.bonusTasksAvailable = 0,
-    this.coinWalletBalance = 0.0,
+    this.servCoinBalance = 0.0,
     this.creditCoinBalance = 0.0,
     this.initialCreditGranted = false,
     this.verificationStatus = 'not_verified',
     this.verificationTier = VerificationTier.none,
-    // --- NEW: Add to constructor ---
-    this.onboardingStep = 0, // Default to the first step
+    this.onboardingStep = 0,
     this.nicFrontUrl,
     this.nicBackUrl,
     this.policeClearanceUrl,
     this.proofOfAddressUrl,
+    this.portfolioImageUrls = const [],
+    this.videoIntroUrl,
+    this.interviewStatus,
+    this.interviewScore,
   }) : profileCompletion = _calculateProfileCompletion(
     displayName: displayName,
     photoURL: photoURL,
-    phoneNumber: phoneNumber,
+    phone: phone, // <-- UPDATED from phoneNumber
     bio: bio,
     isHelper: isHelper,
     qualifications: qualifications,
     experience: experience,
     skills: skills,
+    portfolioImageUrls: portfolioImageUrls,
   );
 
   factory HelpifyUser.fromFirestore(DocumentSnapshot<Map<String, dynamic>> snapshot) {
@@ -115,7 +114,7 @@ class HelpifyUser {
       displayName: data['displayName'] as String?,
       email: data['email'] as String?,
       photoURL: data['photoURL'] as String?,
-      phoneNumber: data['phoneNumber'] as String?,
+      phone: data['phone'] as String?, // <-- UPDATED from phoneNumber
       bio: data['bio'] as String?,
       isHelper: data['isHelper'] as bool?,
       isLive: data['isLive'] as bool? ?? false,
@@ -135,7 +134,7 @@ class HelpifyUser {
       commissionFreeTasksPosted: (data['commissionFreeTasksPosted'] as num?)?.toInt() ?? 0,
       commissionFreeTasksCompleted: (data['commissionFreeTasksCompleted'] as num?)?.toInt() ?? 0,
       bonusTasksAvailable: (data['bonusTasksAvailable'] as num?)?.toInt() ?? 0,
-      coinWalletBalance: (data['coinWalletBalance'] as num?)?.toDouble() ?? 0.0,
+      servCoinBalance: (data['servCoinBalance'] as num?)?.toDouble() ?? 0.0,
       creditCoinBalance: (data['creditCoinBalance'] as num?)?.toDouble() ?? 0.0,
       initialCreditGranted: data['initialCreditGranted'] as bool? ?? false,
       verificationStatus: data['verificationStatus'] as String? ?? 'not_verified',
@@ -143,30 +142,35 @@ class HelpifyUser {
             (e) => e.name == data['verificationTier'],
         orElse: () => VerificationTier.none,
       ),
-      // --- NEW: Add to factory ---
       onboardingStep: data['onboardingStep'] as int? ?? 0,
       nicFrontUrl: data['nicFrontUrl'] as String?,
       nicBackUrl: data['nicBackUrl'] as String?,
       policeClearanceUrl: data['policeClearanceUrl'] as String?,
       proofOfAddressUrl: data['proofOfAddressUrl'] as String?,
+      portfolioImageUrls: List<String>.from(data['portfolioImageUrls'] ?? []),
+      videoIntroUrl: data['videoIntroUrl'] as String?,
+      interviewStatus: data['interviewStatus'] as String?,
+      interviewScore: data['interviewScore'] as int?,
     );
   }
 
   static double _calculateProfileCompletion({
-    String? displayName, String? photoURL, String? phoneNumber, String? bio,
+    String? displayName, String? photoURL, String? phone, String? bio, // <-- UPDATED from phoneNumber
     bool? isHelper, String? qualifications, String? experience, List<String>? skills,
+    List<String>? portfolioImageUrls,
   }) {
     int score = 0;
     int maxScore = 4;
     if (displayName != null && displayName.isNotEmpty) score++;
     if (photoURL != null && photoURL.isNotEmpty) score++;
-    if (phoneNumber != null && phoneNumber.isNotEmpty) score++;
+    if (phone != null && phone.isNotEmpty) score++; // <-- UPDATED from phoneNumber
     if (bio != null && bio.isNotEmpty) score++;
     if (isHelper == true) {
-      maxScore = 7;
+      maxScore = 8;
       if (qualifications != null && qualifications.isNotEmpty) score++;
       if (experience != null && experience.isNotEmpty) score++;
       if (skills != null && skills.isNotEmpty) score++;
+      if (portfolioImageUrls != null && portfolioImageUrls.isNotEmpty) score++;
     }
     if (maxScore == 0) return 0.0;
     return score / maxScore;

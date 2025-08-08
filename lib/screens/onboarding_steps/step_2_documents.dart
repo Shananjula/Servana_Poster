@@ -2,38 +2,26 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:servana/providers/user_provider.dart';
 import 'package:servana/widgets/document_upload_tile.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class DocumentUploadStep extends StatelessWidget {
   final VoidCallback onContinue;
 
   const DocumentUploadStep({super.key, required this.onContinue});
 
-  // A helper function to check if all required documents are uploaded.
+  /// A helper function to check if all required documents are uploaded.
   bool _areAllDocumentsUploaded(BuildContext context) {
     final user = context.read<UserProvider>().user;
     if (user == null) return false;
-    // Add all your required document URLs here
+    // Check that all required document URLs are not null and not empty
     return (user.nicFrontUrl != null && user.nicFrontUrl!.isNotEmpty) &&
         (user.nicBackUrl != null && user.nicBackUrl!.isNotEmpty) &&
         (user.policeClearanceUrl != null && user.policeClearanceUrl!.isNotEmpty);
   }
 
-  Future<void> _saveAndContinue(BuildContext context) async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).update({
-        'onboardingStep': 2,
-      });
-      onContinue();
-    }
-  }
-
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Use watch here to rebuild the widget when the user's document URLs change
     final user = context.watch<UserProvider>().user;
 
     return Padding(
@@ -76,15 +64,13 @@ class DocumentUploadStep extends StatelessWidget {
                   icon: Icons.local_police_outlined,
                   initialUrl: user?.policeClearanceUrl,
                 ),
-                // Add more DocumentUploadTile widgets here for other documents
-                // e.g., Driving License, Proof of Address, etc.
               ],
             ),
           ),
           const SizedBox(height: 24),
           ElevatedButton(
             // The button is enabled only when all documents are uploaded.
-            onPressed: _areAllDocumentsUploaded(context) ? () => _saveAndContinue(context) : null,
+            onPressed: _areAllDocumentsUploaded(context) ? onContinue : null,
             child: const Text("Save & Continue"),
           ),
         ],

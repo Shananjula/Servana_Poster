@@ -4,10 +4,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:servana/models/chat_channel_model.dart';
-import 'package:servana/models/task_model.dart';
 import 'package:servana/screens/conversation_screen.dart';
 import 'package:servana/screens/active_task_screen.dart';
-import 'package:servana/screens/verification_status_screen.dart'; // Corrected import for rejected status
+import 'package:servana/screens/verification_status_screen.dart';
 import 'package:servana/screens/skill_quests_screen.dart';
 
 
@@ -93,11 +92,13 @@ class NotificationService {
           if (doc.exists) {
             final channel = ChatChannel.fromFirestore(doc);
             final currentUserId = FirebaseAuth.instance.currentUser!.uid;
-            final otherUserId = channel.participants.firstWhere((p) => p != currentUserId);
+            // --- FIX: Use 'participantIds' instead of 'participants' ---
+            final otherUserId = channel.participantIds.firstWhere((p) => p != currentUserId);
             Navigator.push(context, MaterialPageRoute(builder: (_) => ConversationScreen(
               chatChannelId: channel.id,
               otherUserName: channel.participantNames[otherUserId] ?? 'User',
               otherUserAvatarUrl: channel.participantAvatars[otherUserId],
+              taskTitle: channel.taskTitle,
             )));
           }
           break;
@@ -108,8 +109,6 @@ class NotificationService {
           if (id == null) return;
           final doc = await FirebaseFirestore.instance.collection('tasks').doc(id).get();
           if(doc.exists) {
-            // --- THIS IS THE FIX ---
-            // We navigate using the task's ID, not the full object.
             Navigator.push(context, MaterialPageRoute(builder: (_) => ActiveTaskScreen(taskId: doc.id)));
           }
           break;
@@ -120,8 +119,6 @@ class NotificationService {
           break;
 
         case 'verification_rejected':
-        // --- LOGICAL FIX ---
-        // Navigate to the status screen so the user can see why they were rejected.
           Navigator.push(context, MaterialPageRoute(builder: (_) => const VerificationStatusScreen()));
           break;
 

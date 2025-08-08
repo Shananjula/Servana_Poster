@@ -16,10 +16,10 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- ADDED: Required for Android 10 (API 29) and above for background location -->
+    <!-- Required for Android 10 (API 29) and above for background location -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
-    <!-- ADDED: Required for foreground service to keep location tracking active -->
+    <!-- Required for foreground service to keep location tracking active -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
 
@@ -57,7 +57,7 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- ADDED: Declaration for the foreground service -->
+        <!-- Declaration for the foreground service -->
         <service
             android:name="com.baseflow.geolocator.GeolocatorLocationService"
             android:enabled="true"
@@ -77,14 +77,21 @@
 
     </application>
 
-    <!-- Your existing queries -->
+    <!-- THIS IS THE UPDATED BLOCK -->
     <queries>
+        <!-- For speech recognition -->
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!-- For opening web links -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />
+        </intent>
+        <!-- THIS IS THE FIX: Added intent for making phone calls -->
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
         </intent>
     </queries>
 </manifest>

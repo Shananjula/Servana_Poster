@@ -23,6 +23,9 @@ class Task {
   final String? assignedHelperAvatarUrl;
   final List<String> participantIds;
 
+  // --- NEW: Field for keyword search ---
+  final List<String> keywords;
+
   // --- Fields for reciprocal contact info ---
   final String? posterPhoneNumber;
   final String? assignedHelperPhoneNumber;
@@ -70,6 +73,8 @@ class Task {
     this.assignedHelperName,
     this.assignedHelperAvatarUrl,
     this.participantIds = const [],
+    // --- NEW: Added keywords to constructor ---
+    this.keywords = const [],
     // --- Added to constructor ---
     this.posterPhoneNumber,
     this.assignedHelperPhoneNumber,
@@ -122,6 +127,9 @@ class Task {
       participantIds: List<String>.from(data['participantIds'] ?? []),
       paymentMethod: data['paymentMethod'] as String? ?? 'escrow',
       isCommissionFree: data['isCommissionFree'] as bool? ?? false,
+
+      // --- NEW: Reading keywords from Firestore ---
+      keywords: List<String>.from(data['keywords'] ?? []),
 
       // Reading phone numbers from Firestore
       posterPhoneNumber: data['posterPhoneNumber'] as String?,
@@ -196,6 +204,8 @@ class Task {
       // --- Writing new fields to Firestore ---
       'posterPhoneNumber': posterPhoneNumber,
       'assignedHelperPhoneNumber': assignedHelperPhoneNumber,
+      // --- NEW: Writing keywords to Firestore ---
+      'keywords': keywords,
     };
   }
 }

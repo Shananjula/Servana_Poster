@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-// --- FIX: Hide the conflicting 'Task' class from firebase_storage ---
 import 'package:firebase_storage/firebase_storage.dart' hide Task;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
@@ -60,8 +59,13 @@ class _ActiveTaskScreenState extends State<ActiveTaskScreen> {
     }
     setState(() => _isUploadingProof = true);
     try {
-      final fileName = '${widget.taskId}_proof_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final ref = FirebaseStorage.instance.ref().child('task_proofs').child(fileName);
+      // Corrected storage path to be compatible with security rules
+      final fileName = 'proof_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final ref = FirebaseStorage.instance
+          .ref()
+          .child('task_proofs')
+          .child(widget.taskId)
+          .child(fileName);
       await ref.putFile(File(_proofImageFile!.path));
       final imageUrl = await ref.getDownloadURL();
       await _firestoreService.helperCompletesTask(taskId, proofImageUrl: imageUrl);
@@ -224,16 +228,58 @@ class _ActiveTaskScreenState extends State<ActiveTaskScreen> {
     );
   }
 
+  // --- UPDATED WIDGET ---
   Widget _buildTaskActionFlow(BuildContext context, Task task, bool isPoster) {
+    final isOnlineTask = task.taskType == 'online';
+
     switch (task.status) {
       case 'assigned':
-        return isPoster ? const _StatusInfoCard(title: 'Waiting for Helper', message: 'The helper has been assigned. They will notify you when they are on their way.', icon: Icons.hourglass_top_rounded) : _ActionCard(title: 'Ready to Go?', message: 'Let the poster know when you start your journey. This will enable live location sharing.', buttonText: 'Start Journey', onPressed: () => _firestoreService.helperStartsJourney(task.id));
+        if (isPoster) {
+          final message = isOnlineTask
+              ? 'The helper has been assigned. They will notify you when they start the work.'
+              : 'The helper has been assigned. They will notify you when they are on their way.';
+          return _StatusInfoCard(
+            title: 'Waiting for Helper',
+            message: message,
+            icon: Icons.hourglass_top_rounded,
+          );
+        } else {
+          // Helper's view
+          final message = isOnlineTask
+              ? 'Let the poster know you are starting the task.'
+              : 'Let the poster know when you start your journey. This will enable live location sharing.';
+          final buttonText = isOnlineTask ? 'Start Task' : 'Start Journey';
+          final onPressedAction = isOnlineTask
+              ? () => _firestoreService.helperStartsOnlineTask(task.id)
+              : () => _firestoreService.helperStartsJourney(task.id);
+
+          return _ActionCard(
+            title: 'Ready to Go?',
+            message: message,
+            buttonText: buttonText,
+            onPressed: onPressedAction,
+          );
+        }
+
       case 'en_route':
+      // This case will now be skipped for online tasks
         return isPoster ? LiveLocationMap(task: task) : _ActionCard(title: 'Journey Started', message: 'Your location is being shared. When you arrive at the destination, tap the button below.', buttonText: 'I Have Arrived', onPressed: () => _firestoreService.helperArrives(task.id));
+
       case 'arrived':
+      // This case will also be skipped for online tasks
         return isPoster ? _ConfirmationCodeCard(code: task.confirmationCode ?? '----') : _EnterCodeCard(controller: _codeController, isLoading: _isSubmittingCode, onSubmit: () => _submitConfirmationCode(task.id));
+
       case 'in_progress':
-        if (isPoster) return const _StatusInfoCard(title: 'Task In Progress', message: 'Your helper is currently working. You will be notified upon completion.', icon: Icons.construction_rounded);
+        if (isPoster) {
+          final message = isOnlineTask
+              ? 'Your helper is currently working on your online task.'
+              : 'Your helper is currently working. You will be notified upon completion.';
+          return _StatusInfoCard(
+            title: 'Task In Progress',
+            message: message,
+            icon: Icons.construction_rounded,
+          );
+        }
         return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           _CompleteTaskCard(
             isLoading: _isUploadingProof,
@@ -247,17 +293,23 @@ class _ActiveTaskScreenState extends State<ActiveTaskScreen> {
           const SizedBox(height: 12),
           OutlinedButton.icon(onPressed: _showModificationDialog, icon: const Icon(Icons.add_shopping_cart_rounded), label: const Text("Request Add-on / Scope Change"), style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12), foregroundColor: Theme.of(context).primaryColor))
         ]);
+
       case 'pending_completion':
         return isPoster ? _ConfirmCompletionCard(task: task, onConfirm: () => _firestoreService.posterConfirmsCompletion(context, task)) : const _StatusInfoCard(title: 'Waiting for Final Confirmation', message: 'The poster has been notified. Payment will be processed upon their confirmation.', icon: Icons.price_check_rounded);
+
       case 'pending_payment':
       case 'pending_rating':
         return const _StatusInfoCard(title: 'Finalizing Task', message: 'Please follow the prompts to complete payment and leave a rating.', icon: Icons.paid_outlined, color: Colors.green);
+
       case 'closed':
         return const _StatusInfoCard(title: 'Task Complete!', message: 'This task has been paid, rated, and is now closed. Thank you!', icon: Icons.check_circle_rounded, color: Colors.green);
+
       case 'in_dispute':
         return const _StatusInfoCard(title: 'Task in Dispute', message: 'An issue has been reported. Our support team will contact you shortly to mediate.', icon: Icons.gavel_rounded, color: Colors.red);
+
       case 'cancelled':
         return _StatusInfoCard(title: 'Task Cancelled', message: 'This task was cancelled. Reason: ${task.cancellationReason ?? "No reason provided."}', icon: Icons.do_not_disturb_on_outlined, color: Colors.grey);
+
       default:
         return _StatusInfoCard(title: 'Status: ${task.status}', message: 'The task is in an unknown state.');
     }
@@ -299,6 +351,7 @@ class _ActiveTaskScreenState extends State<ActiveTaskScreen> {
 }
 
 // --- ALL REQUIRED HELPER WIDGETS ---
+// These do not need any changes.
 class _TaskSummaryCard extends StatelessWidget {
   final Task task;
   const _TaskSummaryCard({required this.task});
