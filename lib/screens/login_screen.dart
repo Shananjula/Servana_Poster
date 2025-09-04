@@ -1,6 +1,24 @@
+// lib/screens/login_screen.dart
+//
+// Phone-only Login (Sri Lanka default)
+// • Step 1: enter phone → Send code (Firebase verifyPhoneNumber)
+// • Step 2: enter 6-digit code → Verify & sign in
+// • Resend timer + error messages
+// • Auto handle instant verification / auto-retrieval when the device supports it
+//
+// Flows after success:
+// • We do NOT manually navigate here; AuthWrapper (in main.dart) listens to auth changes
+//   and routes appropriately. That keeps navigation centralized and reliable.
+//
+// Safe fallbacks:
+// • If auto-verification triggers (Android), we immediately sign in.
+// • If SMS arrives and Google Play Services auto-retrieves the code, we autofill.
+// • If verification fails, a friendly message appears.
+// • Country code defaults to +94 (changeable by the user).
+
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -10,310 +28,308 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final TextEditingController _phoneController = TextEditingController();
-  final TextEditingController _otpController = TextEditingController();
-  final FocusNode _phoneFocusNode = FocusNode();
-  final FocusNode _otpFocusNode = FocusNode();
+  // --- Step state ---
+  final _phoneCtrl = TextEditingController(text: '+94');
+  final _codeCtrl = TextEditingController();
+  final _formPhone = GlobalKey<FormState>();
+  final _formCode = GlobalKey<FormState>();
 
   String? _verificationId;
-  bool _isLoading = false;
-  bool _isOtpSent = false;
+  int? _resendToken;
+
+  bool _sending = false;
+  bool _verifying = false;
+
+  int _resendSeconds = 0;
+  Timer? _resendTimer;
+
+  String? _error; // surface friendly errors
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_isOtpSent && mounted) {
-        FocusScope.of(context).requestFocus(_phoneFocusNode);
+  void dispose() {
+    _phoneCtrl.dispose();
+    _codeCtrl.dispose();
+    _resendTimer?.cancel();
+    super.dispose();
+  }
+
+  // --- UI helpers ---
+
+  bool get _hasVerification => _verificationId != null && _verificationId!.isNotEmpty;
+
+  void _startResendCountdown([int seconds = 30]) {
+    _resendTimer?.cancel();
+    setState(() => _resendSeconds = seconds);
+    _resendTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      if (_resendSeconds <= 1) {
+        t.cancel();
+        setState(() => _resendSeconds = 0);
+      } else {
+        setState(() => _resendSeconds -= 1);
       }
     });
   }
 
-  @override
-  void dispose() {
-    _phoneController.dispose();
-    _otpController.dispose();
-    _phoneFocusNode.dispose();
-    _otpFocusNode.dispose();
-    super.dispose();
-  }
-
-  // --- DEFINITIVE FIX ---
-  /// Safely creates or updates a user document upon login.
-  /// Using `set` with `merge: true` avoids read-before-write race conditions
-  /// by creating the document if it's missing or updating it if it exists.
-  Future<void> _ensureUserDocumentExists(User user) async {
-    final userRef = _firestore.collection('users').doc(user.uid);
-
-    // This command will CREATE the document with these fields if it doesn't exist,
-    // or MERGE these fields into an existing document without overwriting other data.
-    // This requires only 'write' permission on the user's own document.
-    await userRef.set({
-      'phone': user.phoneNumber,
-      'createdAt': FieldValue.serverTimestamp(),
-      'status': 'active', // This ensures the isUserActive() rule will pass
-      'email': user.email,
-      'displayName': user.displayName,
-      'photoURL': user.photoURL,
-    }, SetOptions(merge: true)); // <-- The key is using merge: true
-  }
-
-
-  void _showErrorSnackBar(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Theme.of(context).colorScheme.error,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  void _showSuccessSnackBar(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Theme.of(context).colorScheme.primary,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-
-  Future<void> _sendOtp() async {
-    if (_phoneController.text.trim().isEmpty) {
-      _showErrorSnackBar("Please enter your phone number.");
-      return;
+  void _setError(Object e) {
+    final msg = e.toString();
+    String friendly = 'Something went wrong. Please try again.';
+    if (msg.contains('invalid-phone-number')) {
+      friendly = 'That phone number looks invalid.';
+    } else if (msg.contains('too-many-requests')) {
+      friendly = 'Too many attempts. Please try again later.';
+    } else if (msg.contains('session-expired')) {
+      friendly = 'Code expired. Please resend a new code.';
+    } else if (msg.contains('invalid-verification-code')) {
+      friendly = 'That code is not correct.';
     }
-    if (_phoneController.text.trim().length < 9 || _phoneController.text.trim().length > 10) {
-      _showErrorSnackBar("Please enter a valid 9 or 10 digit phone number.");
-      return;
-    }
+    setState(() => _error = friendly);
+  }
 
-    String phoneNumber = "+94${_phoneController.text.trim()}";
-    setState(() => _isLoading = true);
+  // --- Actions ---
 
-    await _auth.verifyPhoneNumber(
-      phoneNumber: phoneNumber,
-      verificationCompleted: (PhoneAuthCredential credential) async {
-        UserCredential userCredential = await _auth.signInWithCredential(credential);
-        if (userCredential.user != null) {
-          // Ensure user document exists on auto-retrieval
-          await _ensureUserDocumentExists(userCredential.user!);
-        }
-        if (mounted) {
-          _showSuccessSnackBar("Signed in automatically!");
-          setState(() => _isLoading = false);
-        }
-      },
-      verificationFailed: (FirebaseAuthException e) {
-        if (mounted) {
-          _showErrorSnackBar("Verification Failed: ${e.code}");
-          setState(() => _isLoading = false);
-        }
-      },
-      codeSent: (String verificationId, int? resendToken) {
-        if (mounted) {
-          _showSuccessSnackBar("OTP sent to $phoneNumber!");
+  Future<void> _sendCode({bool resend = false}) async {
+    if (!(_formPhone.currentState?.validate() ?? false)) return;
+
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+
+    final phone = _phoneCtrl.text.trim();
+
+    try {
+      await FirebaseAuth.instance.verifyPhoneNumber(
+        phoneNumber: phone,
+        timeout: const Duration(seconds: 60),
+        forceResendingToken: resend ? _resendToken : null,
+        verificationCompleted: (PhoneAuthCredential credential) async {
+          // Android: instant verification or auto-retrieval
+          try {
+            await FirebaseAuth.instance.signInWithCredential(credential);
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Signed in automatically.')),
+            );
+          } catch (e) {
+            _setError(e);
+          }
+        },
+        verificationFailed: (FirebaseAuthException e) {
+          _setError(e);
+        },
+        codeSent: (String verificationId, int? forceResendingToken) {
           setState(() {
             _verificationId = verificationId;
-            _isOtpSent = true;
-            _isLoading = false;
-            FocusScope.of(context).requestFocus(_otpFocusNode);
+            _resendToken = forceResendingToken;
+            _error = null;
           });
-        }
-      },
-      codeAutoRetrievalTimeout: (String verificationId) {
-        print("codeAutoRetrievalTimeout: $verificationId");
-      },
-      timeout: const Duration(seconds: 60),
-    );
+          _startResendCountdown(30);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Code sent. Check your SMS.')),
+          );
+        },
+        codeAutoRetrievalTimeout: (String verificationId) {
+          // Still can use this verificationId with the code
+          setState(() => _verificationId = verificationId);
+        },
+      );
+    } catch (e) {
+      _setError(e);
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
-  Future<void> _verifyOtp() async {
-    if (_otpController.text.trim().length != 6 || _verificationId == null) {
-      _showErrorSnackBar("Please enter the 6-digit code.");
+  Future<void> _verifyCode() async {
+    if (!(_formCode.currentState?.validate() ?? false)) return;
+    if (_verificationId == null || _verificationId!.isEmpty) {
+      setState(() => _error = 'Please request a code first.');
       return;
     }
-    setState(() => _isLoading = true);
+
+    setState(() {
+      _verifying = true;
+      _error = null;
+    });
 
     try {
       final credential = PhoneAuthProvider.credential(
         verificationId: _verificationId!,
-        smsCode: _otpController.text.trim(),
+        smsCode: _codeCtrl.text.trim(),
       );
-      UserCredential userCredential = await _auth.signInWithCredential(credential);
-      if (userCredential.user != null) {
-        // Ensure user document exists on successful verification
-        await _ensureUserDocumentExists(userCredential.user!);
-      }
+      await FirebaseAuth.instance.signInWithCredential(credential);
 
-      if(mounted) _showSuccessSnackBar("Successfully signed in!");
+      if (!mounted) return;
+      // AuthWrapper (main.dart) will pick this up and route. We just show a toast.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Logged in. Welcome!')),
+      );
     } on FirebaseAuthException catch (e) {
-      if (mounted) _showErrorSnackBar("Invalid OTP or error: ${e.code}");
+      _setError(e);
+    } catch (e) {
+      _setError(e);
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted) setState(() => _verifying = false);
     }
   }
 
+  // --- Validators ---
+
+  String? _validatePhone(String? v) {
+    final s = (v ?? '').trim();
+    if (s.isEmpty) return 'Enter your phone number';
+    // Very loose check: starts with + and > 8 digits total
+    final digits = s.replaceAll(RegExp(r'\D'), '');
+    if (!s.startsWith('+') || digits.length < 9) {
+      return 'Enter a valid phone number with country code';
+    }
+    return null;
+  }
+
+  String? _validateCode(String? v) {
+    final s = (v ?? '').trim();
+    if (s.length != 6) return 'Enter the 6-digit code';
+    if (!RegExp(r'^\d{6}$').hasMatch(s)) return 'Digits only';
+    return null;
+  }
+
+  // --- Build ---
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final textTheme = theme.textTheme;
-    final colorScheme = theme.colorScheme;
-
-    final primaryAction = _isOtpSent ? _verifyOtp : _sendOtp;
-    final buttonText = _isOtpSent ? 'Verify & Sign In' : 'Send OTP';
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Image.asset(
-                  'assets/Gemini_Generated_Image',
-                  height: 80,
-                  errorBuilder: (context, error, stackTrace) => Icon(
-                    Icons.task_alt_rounded,
-                    size: 80,
-                    color: colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  _isOtpSent ? 'Enter Verification Code' : 'Welcome to Servana!',
-                  textAlign: TextAlign.center,
-                  style: textTheme.headlineMedium?.copyWith(
-                    color: colorScheme.primary,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  _isOtpSent
-                      ? 'A 6-digit code was sent to your phone.'
-                      : 'Sign in or create an account with your phone number.',
-                  textAlign: TextAlign.center,
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: textTheme.bodySmall?.color,
-                  ),
-                ),
-                const SizedBox(height: 48),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  transitionBuilder: (Widget child, Animation<double> animation) {
-                    return FadeTransition(
-                      opacity: animation,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0.0, 0.1),
-                          end: Offset.zero,
-                        ).animate(animation),
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: _isOtpSent
-                      ? _buildOtpInputUI(theme, textTheme)
-                      : _buildPhoneInputUI(theme, textTheme),
-                ),
-                const SizedBox(height: 24),
-                _isLoading
-                    ? Center(
-                  child: CircularProgressIndicator(
-                    color: colorScheme.primary,
-                  ),
-                )
-                    : ElevatedButton(
-                  onPressed: primaryAction,
-                  child: Text(buttonText),
-                ),
-                const SizedBox(height: 16),
-                if (_isOtpSent && !_isLoading)
-                  TextButton(
-                    onPressed: () {
-                      setState(() {
-                        _isOtpSent = false;
-                        _otpController.clear();
-                        _phoneController.clear();
-                        FocusScope.of(context).requestFocus(_phoneFocusNode);
-                      });
-                    },
-                    child: const Text('Use a different number?'),
-                  )
-              ],
+      appBar: AppBar(
+        title: const Text('Sign in'),
+        centerTitle: true,
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+        children: [
+          // Header
+          Card(
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: cs.primary.withOpacity(0.12),
+                foregroundColor: cs.primary,
+                child: const Icon(Icons.phone_iphone),
+              ),
+              title: const Text('Sign in with your phone'),
+              subtitle: const Text('We’ll send a verification code via SMS.'),
             ),
           ),
-        ),
+          const SizedBox(height: 16),
+
+          // Step 1: Phone
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Form(
+                key: _formPhone,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Phone number', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: _phoneCtrl,
+                      keyboardType: TextInputType.phone,
+                      validator: _validatePhone,
+                      decoration: const InputDecoration(
+                        hintText: '+94 7X XXX XXXX',
+                        prefixIcon: Icon(Icons.flag_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _sending ? null : () => _sendCode(resend: false),
+                            icon: _sending
+                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Icon(Icons.sms_outlined),
+                            label: const Text('Send code'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed: (_resendSeconds == 0 && !_sending && _hasVerification)
+                              ? () => _sendCode(resend: true)
+                              : null,
+                          child: Text(_resendSeconds == 0 ? 'Resend' : 'Resend (${_resendSeconds}s)'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Step 2: Code
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+              child: Form(
+                key: _formCode,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Verification code', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    TextFormField(
+                      controller: _codeCtrl,
+                      keyboardType: TextInputType.number,
+                      validator: _validateCode,
+                      maxLength: 6,
+                      decoration: const InputDecoration(
+                        hintText: '6-digit code',
+                        counterText: '',
+                        prefixIcon: Icon(Icons.lock_outline),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: _verifying ? null : _verifyCode,
+                      icon: _verifying
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.verified_user_outlined),
+                      label: const Text('Verify & sign in'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Card(
+              color: cs.errorContainer,
+              child: ListTile(
+                leading: Icon(Icons.error_outline, color: cs.onErrorContainer),
+                title: Text(_error!, style: TextStyle(color: cs.onErrorContainer)),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 12),
+
+          // Footer
+          Center(
+            child: Text(
+              'By continuing you agree to our Terms & Privacy.',
+              style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
       ),
-    );
-  }
-
-  Widget _buildPhoneInputUI(ThemeData theme, TextTheme textTheme) {
-    return Column(
-      key: const ValueKey('phone-input'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TextFormField(
-          controller: _phoneController,
-          focusNode: _phoneFocusNode,
-          keyboardType: TextInputType.phone,
-          decoration: const InputDecoration(
-            hintText: '77 123 4567',
-            labelText: 'Phone Number',
-            prefixIcon: Icon(Icons.phone_android_rounded),
-            prefixText: '+94 ',
-          ),
-          style: textTheme.bodyLarge,
-          validator: (value) {
-            if (value == null || value.trim().isEmpty) {
-              return 'Phone number cannot be empty.';
-            }
-            if (value.trim().length < 9 || value.trim().length > 10) {
-              return 'Enter a valid 9 or 10 digit number.';
-            }
-            return null;
-          },
-          autovalidateMode: AutovalidateMode.onUserInteraction,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildOtpInputUI(ThemeData theme, TextTheme textTheme) {
-    return Column(
-      key: const ValueKey('otp-input'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        TextFormField(
-          controller: _otpController,
-          focusNode: _otpFocusNode,
-          keyboardType: TextInputType.number,
-          textAlign: TextAlign.center,
-          maxLength: 6,
-          style: textTheme.headlineMedium?.copyWith(letterSpacing: 10, fontWeight: FontWeight.bold),
-          decoration: const InputDecoration(
-            hintText: '● ● ● ● ● ●',
-            hintStyle: TextStyle(letterSpacing: 10, fontWeight: FontWeight.bold),
-            counterText: "",
-            labelText: 'OTP Code',
-          ),
-          validator: (value) {
-            if (value == null || value.trim().length != 6) {
-              return 'Enter the 6-digit code.';
-            }
-            return null;
-          },
-          autovalidateMode: AutovalidateMode.onUserInteraction,
-        ),
-      ],
     );
   }
 }

@@ -1,661 +1,665 @@
-import 'dart:ui';
+// lib/screens/home_screen.dart
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:provider/provider.dart';
-import 'package:servana/models/task_model.dart';
-import 'package:servana/providers/user_provider.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+
+import 'package:servana/l10n/i18n.dart';
+import 'package:servana/screens/notifications_screen.dart';
 import 'package:servana/screens/browse_screen.dart';
 import 'package:servana/screens/post_task_screen.dart';
-import 'package:servana/screens/profile_screen.dart';
-import 'package:servana/screens/activity_screen.dart';
-import 'package:flutter/services.dart';
-import 'package:servana/screens/notifications_screen.dart';
-import 'package:servana/screens/chat_list_screen.dart';
-import 'package:servana/widgets/category_grid_view.dart';
-import 'package:servana/widgets/ai_recommendation_section.dart';
-import 'package:servana/dialogs/urgent_task_dialog.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter_animate/flutter_animate.dart';
-
-// --- Main Home Screen Logic (Unchanged) ---
-enum TaskMode { physical, online }
+import 'package:servana/screens/my_posts_screen.dart';
+import 'package:servana/screens/helper_public_profile_screen.dart';
+import 'package:servana/screens/map_view_screen.dart'; // full map page
+import 'package:servana/screens/top_up_screen.dart';   // wallet shortcut
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int _selectedIndex = 0;
+  // Home-level filter state we carry into Browse
+  String _mode = 'Physical'; // or 'Online'
+  bool _openNow = false;
 
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+  void _openBrowse({String? initialCategory}) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BrowseScreen(initialCategory: initialCategory),
+        settings: RouteSettings(
+          name: 'Browse',
+          arguments: {'serviceMode': _mode, 'openNow': _openNow},
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final userProvider = context.watch<UserProvider>();
-    final isRegisteredHelper = userProvider.user?.isHelper ?? false;
-    final activeMode = userProvider.activeMode;
-    final bool useHelperUI = isRegisteredHelper && activeMode == AppMode.helper;
-
-    final List<Widget> posterScreens = [
-      const _PosterDashboardView(),
-      const BrowseScreen(key: ValueKey('poster_browse')),
-      const ActivityScreen(),
-      const ProfileScreen(),
-    ];
-    const List<BottomNavigationBarItem> posterNavItems = [
-      BottomNavigationBarItem(icon: Icon(Icons.home_rounded), label: 'Home'),
-      BottomNavigationBarItem(icon: Icon(Icons.search_outlined), label: 'Find Help'),
-      BottomNavigationBarItem(icon: Icon(Icons.list_alt_rounded), label: 'My Tasks'),
-      BottomNavigationBarItem(icon: Icon(Icons.person_outline_rounded), label: 'Profile'),
-    ];
-
-    final List<Widget> helperScreens = [
-      const PremiumHelperDashboard(),
-      const BrowseScreen(key: ValueKey('helper_browse')),
-      const ActivityScreen(),
-      const ProfileScreen(),
-    ];
-    const List<BottomNavigationBarItem> helperNavItems = [
-      BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Dashboard'),
-      BottomNavigationBarItem(icon: Icon(Icons.work_outline_rounded), label: 'Find Work'),
-      BottomNavigationBarItem(icon: Icon(Icons.assignment_turned_in_outlined), label: 'My Jobs'),
-      BottomNavigationBarItem(icon: Icon(Icons.person_outline_rounded), label: 'Profile'),
-    ];
-
-    final screens = useHelperUI ? helperScreens : posterScreens;
-    final navItems = useHelperUI ? helperNavItems : posterNavItems;
-
-    if (_selectedIndex >= screens.length) {
-      _selectedIndex = 0;
-    }
-
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: screens,
+      appBar: AppBar(
+        title: Text(t(context, 'SERVANA'),
+            style: const TextStyle(letterSpacing: 1.2, fontWeight: FontWeight.w800)),
+        centerTitle: false,
+        actions: [
+          IconButton(
+            tooltip: 'Notifications',
+            icon: const Icon(Icons.notifications_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+            ),
+          ),
+        ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed,
-        items: navItems,
-        currentIndex: _selectedIndex,
-        onTap: _onItemTapped,
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+        children: [
+          // Greeting line
+          const _GreetingLine(),
+          const SizedBox(height: 10),
+
+          // Big hero
+          Text(
+            t(context, 'Find help, fast'),
+            style:
+            const TextStyle(fontSize: 30, height: 1.15, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            t(context, 'Post a task or browse trusted helpers'),
+            style: TextStyle(color: cs.onSurfaceVariant, fontSize: 16),
+          ),
+
+          const SizedBox(height: 16),
+          _QuickActionsRow(
+            onPost: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const PostTaskScreen()),
+            ),
+            onBrowse: () => _openBrowse(),
+            onWallet: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TopUpScreen()),
+            ),
+            onMyPosts: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const MyPostsScreen()),
+            ),
+          ),
+
+          const SizedBox(height: 18),
+          const _MiniMapCard(),
+
+          const SizedBox(height: 14),
+          // Swappable categories
+          _CategoryChips(
+            onPick: (label) => _openBrowse(initialCategory: label),
+          ),
+
+          // Online/Physical toggle + "Open now"
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'Physical', label: Text('Physical')),
+                  ButtonSegment(value: 'Online', label: Text('Online')),
+                ],
+                selected: {_mode},
+                onSelectionChanged: (s) => setState(() => _mode = s.first),
+              ),
+              const Spacer(),
+              FilterChip(
+                label: const Text('Open now'),
+                selected: _openNow,
+                onSelected: (v) => setState(() => _openNow = v),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+          _SectionHeader(
+            title: t(context, 'Recommended for you'),
+            onSeeAll: () => _openBrowse(),
+          ),
+          const SizedBox(height: 8),
+          const _RecommendedHelpers(),
+
+          const SizedBox(height: 18),
+          _SectionHeader(
+            title: t(context, 'My recent posts'),
+            onSeeAll: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const MyPostsScreen()),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const _MyRecentPostsRow(),
+        ],
       ),
     );
   }
 }
 
-// =========================================================================
-// --- PREMIUM HELPER DASHBOARD (Polished UI & Layout Fixed) ---
-// =========================================================================
-class PremiumHelperDashboard extends StatelessWidget {
-  const PremiumHelperDashboard({super.key});
+/// ===== Greeting =====
+class _GreetingLine extends StatelessWidget {
+  const _GreetingLine();
 
-  TextStyle _getTextStyle(
-      {double fontSize = 16,
-        FontWeight fontWeight = FontWeight.normal,
-        Color color = Colors.white,
-        double letterSpacing = 0.5}) {
-    return GoogleFonts.poppins(
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      color: color,
-      letterSpacing: letterSpacing,
-      shadows: [
-        Shadow(
-          color: Colors.black.withOpacity(0.25),
-          offset: const Offset(0, 1),
-          blurRadius: 4,
-        )
-      ],
-    );
+  String _greetingForHour(int h) {
+    if (h >= 5 && h < 12) return 'Good morning ☀️';
+    if (h >= 12 && h < 17) return 'Good afternoon 🌤️';
+    if (h >= 17 && h < 22) return 'Good evening 🌙';
+    return 'Hello 👋';
   }
 
   @override
   Widget build(BuildContext context) {
-    final user = context.watch<UserProvider>().user;
+    final hour = DateTime.now().hour;
+    final base = _greetingForHour(hour);
 
-    if (user == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    final user = FirebaseAuth.instance.currentUser;
+    final uid = user?.uid;
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Color(0xFF005C97), Color(0xFF363795)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-          ),
-          CustomScrollView(
-            slivers: [
-              SliverAppBar(
-                backgroundColor: Colors.transparent,
-                elevation: 0,
-                systemOverlayStyle: SystemUiOverlayStyle.light,
-                title: Text(
-                  'Welcome, ${user.displayName ?? 'Helper'}!',
-                  style: _getTextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                ),
-                actions: [
-                  _buildGlassmorphicIconButton(
-                    context,
-                    icon: Icons.chat_bubble_outline_rounded,
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatListScreen())),
-                  ),
-                  _buildGlassmorphicIconButton(
-                    context,
-                    icon: Icons.notifications_outlined,
-                    onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
-                  ),
-                  const SizedBox(width: 8),
-                ],
-              ),
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 24),
-                      _buildSectionTitle("At a Glance"),
-                      const SizedBox(height: 16),
-                      _buildStatsCarousel(),
-                      const SizedBox(height: 32),
-                      _buildGamificationCard(),
-                      const SizedBox(height: 32),
-                      _buildSectionTitle("My Skill Categories"),
-                      const SizedBox(height: 16),
-                      _buildSkillsCarousel(context, user.skills),
-                      const SizedBox(height: 32),
-                      _buildSectionTitle("Recommended For You"),
-                      const SizedBox(height: 16),
-                      _buildRecommendedTasksSection(user.skills),
-                      const SizedBox(height: 40),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ).animate().fadeIn(duration: 500.ms),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildGlassmorphicIconButton(BuildContext context, {required IconData icon, required VoidCallback onPressed}) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(12),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-        child: Container(
-          margin: const EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white.withOpacity(0.2)),
-          ),
-          child: IconButton(
-            icon: Icon(icon, color: Colors.white),
-            onPressed: onPressed,
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: _getTextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white.withOpacity(0.9)),
-    ).animate().fadeIn(delay: 200.ms).slideX(begin: -0.2);
-  }
-
-  Widget _buildStatsCarousel() {
-    final stats = [
-      {'icon': Icons.inbox_rounded, 'value': '3', 'label': 'New Invites', 'color': Colors.amber.shade300},
-      {'icon': Icons.construction_rounded, 'value': '2', 'label': 'Active Jobs', 'color': Colors.lightBlueAccent.shade100},
-      {'icon': Icons.assignment_turned_in_rounded, 'value': '12', 'label': 'Completed', 'color': Colors.greenAccent.shade200},
-    ];
-
-    return SizedBox(
-      height: 130,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: stats.length,
-        itemBuilder: (context, index) {
-          final stat = stats[index];
-          return _GlassmorphicCard(
-            width: 130,
-            margin: const EdgeInsets.only(right: 16),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(stat['icon'] as IconData, color: stat['color'] as Color, size: 32),
-                const SizedBox(height: 8),
-                Text(
-                  stat['value'] as String,
-                  style: _getTextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                // FINAL FIX: Use Expanded and FittedBox to ensure text never overflows.
-                Expanded(
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
-                      stat['label'] as String,
-                      style: _getTextStyle(fontSize: 12, color: Colors.white.withOpacity(0.8)),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ).animate().fadeIn(delay: (300 + index * 100).ms).slideX(begin: -0.5);
-        },
-      ),
-    );
-  }
-
-  Widget _buildGamificationCard() {
-    const double weeklyGoal = 25000.0;
-    const double currentEarnings = 18500.0;
-    final double progress = (currentEarnings / weeklyGoal).clamp(0.0, 1.0);
-
-    return _GlassmorphicCard(
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("Weekly Goal", style: _getTextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text(
-                  "You're ${((1 - progress) * 100).toStringAsFixed(0)}% away from your goal of LKR ${weeklyGoal.toStringAsFixed(0)}!",
-                  style: _getTextStyle(fontSize: 14, color: Colors.white.withOpacity(0.8)).copyWith(height: 1.4),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 24),
-          SizedBox(
-            width: 80,
-            height: 80,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                CircularProgressIndicator(
-                  value: progress,
-                  strokeWidth: 8,
-                  backgroundColor: Colors.white.withOpacity(0.2),
-                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.greenAccent),
-                ),
-                Center(
-                  child: Text(
-                    "${(progress * 100).toStringAsFixed(0)}%",
-                    style: _getTextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    ).animate().fadeIn(delay: 500.ms).slideY(begin: 0.5);
-  }
-
-  Widget _buildSkillsCarousel(BuildContext context, List<String> skills) {
-    if (skills.isEmpty) {
-      return _GlassmorphicCard(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 24.0),
-          child: Column(
-            children: [
-              const Icon(Icons.add_circle_outline, size: 40, color: Colors.white70),
-              const SizedBox(height: 16),
-              Text("Add skills to find jobs!", style: _getTextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Text(
-                "Go to your profile to add the services you offer.",
-                textAlign: TextAlign.center,
-                style: _getTextStyle(fontSize: 14, color: Colors.white.withOpacity(0.7)),
-              ),
-            ],
-          ),
-        ),
+    if (user?.displayName != null && user!.displayName!.trim().isNotEmpty) {
+      final name = user.displayName!.trim();
+      return Text(
+        '$base, $name',
+        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
       );
     }
 
-    return SizedBox(
-      height: 130,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: skills.length,
-        itemBuilder: (context, index) {
-          final skill = skills[index];
-          return GestureDetector(
-            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => BrowseScreen(initialCategory: skill))),
-            child: _GlassmorphicCard(
-              width: 120,
-              margin: const EdgeInsets.only(right: 16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(_getIconForCategory(skill), color: Colors.white, size: 40),
-                  const SizedBox(height: 16),
-                  Text(
-                    skill,
-                    textAlign: TextAlign.center,
-                    style: _getTextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-            ),
-          ).animate().fadeIn(delay: (600 + index * 100).ms).slideX(begin: -0.5);
-        },
-      ),
-    );
-  }
-
-  Widget _buildRecommendedTasksSection(List<String> skills) {
-    if (skills.isEmpty) {
-      return const SizedBox.shrink();
+    if (uid == null) {
+      return Text(
+        '$base',
+        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+      );
     }
 
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('tasks')
-          .where('category', whereIn: skills)
-          .where('status', isEqualTo: 'open')
-          .orderBy('timestamp', descending: true)
-          .limit(5)
-          .snapshots(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator(color: Colors.white));
-        }
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return _GlassmorphicCard(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.task_alt_rounded, color: Colors.white70, size: 30),
-                  const SizedBox(width: 16),
-                  Text(
-                    "No new tasks match your skills.",
-                    style: _getTextStyle(color: Colors.white.withOpacity(0.8)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        }
-        final tasks = snapshot.data!.docs.map((doc) => Task.fromFirestore(doc)).toList();
-        return ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: tasks.length,
-          itemBuilder: (context, index) {
-            return _PremiumTaskCard(task: tasks[index])
-                .animate()
-                .fadeIn(delay: (800 + index * 100).ms)
-                .slideY(begin: 0.5);
-          },
+    final doc = FirebaseFirestore.instance.collection('users').doc(uid);
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: doc.snapshots(),
+      builder: (context, snap) {
+        final name = (snap.data?.data()?['displayName'] ?? '').toString().trim();
+        final who = name.isEmpty ? 'there' : name;
+        return Text(
+          '$base, $who',
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
         );
       },
     );
   }
-
-  IconData _getIconForCategory(String categoryName) {
-    switch (categoryName.toLowerCase()) {
-      case 'home tutor': return Icons.menu_book_rounded;
-      case 'rider': return Icons.delivery_dining_rounded;
-      case 'cleaning': return Icons.cleaning_services_rounded;
-      case 'handyman': return Icons.build_circle_outlined;
-      case 'moving': return Icons.local_shipping_outlined;
-      case 'gardening': return Icons.yard_outlined;
-      case 'appliance': return Icons.electrical_services_rounded;
-      case 'assembly': return Icons.add_box_outlined;
-      case 'home repair & maintenance': return Icons.home_repair_service_rounded;
-      case 'pick up driver': return Icons.airport_shuttle_rounded;
-      case 'cleaner': return Icons.clean_hands_rounded;
-      default: return Icons.work_outline_rounded;
-    }
-  }
 }
 
-// --- GLASSMORPHIC CARD WIDGET ---
-class _GlassmorphicCard extends StatelessWidget {
-  final Widget child;
-  final double? width;
-  final double? height;
-  final EdgeInsetsGeometry margin;
-
-  const _GlassmorphicCard({
-    required this.child,
-    this.width,
-    this.height,
-    this.margin = EdgeInsets.zero,
+/// ===== Quick actions =====
+class _QuickActionsRow extends StatelessWidget {
+  const _QuickActionsRow({
+    required this.onPost,
+    required this.onBrowse,
+    required this.onWallet,
+    required this.onMyPosts,
   });
+
+  final VoidCallback onPost;
+  final VoidCallback onBrowse;
+  final VoidCallback onWallet;
+  final VoidCallback onMyPosts;
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-        child: Container(
-          width: width,
-          height: height,
-          margin: margin,
-          padding: const EdgeInsets.all(16),
+    return Row(
+      children: [
+        _ActionTile(icon: Icons.post_add_rounded, label: t(context, 'Post'), onTap: onPost),
+        const SizedBox(width: 12),
+        _ActionTile(icon: Icons.people_rounded, label: t(context, 'Browse'), onTap: onBrowse),
+        const SizedBox(width: 12),
+        _ActionTile(
+            icon: Icons.account_balance_wallet_rounded,
+            label: 'Wallet',
+            onTap: onWallet),
+        const SizedBox(width: 12),
+        _ActionTile(
+            icon: Icons.list_alt_rounded, label: 'My posts', onTap: onMyPosts),
+      ],
+    );
+  }
+}
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({required this.icon, required this.label, required this.onTap});
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Expanded(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Ink(
+          height: 92,
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withOpacity(0.2)),
+            color: cs.surface,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: cs.outline.withOpacity(0.12)),
           ),
-          child: child,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 28),
+              const SizedBox(height: 8),
+              Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-// --- PREMIUM TASK CARD WIDGET ---
-class _PremiumTaskCard extends StatelessWidget {
-  final Task task;
-  const _PremiumTaskCard({required this.task});
-
-  TextStyle _getTextStyle(
-      {double fontSize = 16,
-        FontWeight fontWeight = FontWeight.normal,
-        Color color = Colors.white,
-        double letterSpacing = 0.5}) {
-    return GoogleFonts.poppins(
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      color: color,
-      shadows: [
-        Shadow(
-          color: Colors.black.withOpacity(0.25),
-          offset: const Offset(0, 1),
-          blurRadius: 4,
-        )
-      ],
-    );
-  }
+/// ===== Mini-map card =====
+class _MiniMapCard extends StatelessWidget {
+  const _MiniMapCard();
 
   @override
   Widget build(BuildContext context) {
-    return _GlassmorphicCard(
-      margin: const EdgeInsets.only(bottom: 16),
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const MapViewScreen()),
+      ),
+      child: Ink(
+        height: 200,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          color: cs.surface,
+          border: Border.all(color: cs.outline.withOpacity(0.12)),
+        ),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [cs.surfaceVariant, cs.surface],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              top: 12,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: cs.surface,
+                  borderRadius: BorderRadius.circular(32),
+                  border: Border.all(color: cs.outline.withOpacity(0.12)),
+                ),
+                child: const Text('Helpers near you',
+                    style: TextStyle(fontWeight: FontWeight.w700)),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: Row(
+                children: [
+                  _pill(context, '2 km'),
+                  const SizedBox(width: 8),
+                  _pill(context, '5 km'),
+                  const SizedBox(width: 8),
+                  _pill(context, '10 km'),
+                  const Spacer(),
+                  _pill(context, 'All', icon: Icons.tune_rounded),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _pill(BuildContext context, String text, {IconData? icon}) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: cs.outline.withOpacity(0.12)),
+      ),
+      child: Row(
+        children: [
+          if (icon != null) ...[Icon(icon, size: 16), const SizedBox(width: 6)],
+          Text(text, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+/// ===== Category chips (swipeable) =====
+class _CategoryChips extends StatelessWidget {
+  const _CategoryChips({required this.onPick});
+  final void Function(String) onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    const cats = <(String, IconData)>[
+      ('Plumbing', Icons.plumbing_rounded),
+      ('Cleaning', Icons.cleaning_services_rounded),
+      ('Tutoring', Icons.menu_book_rounded),
+      ('Electrical', Icons.electric_bolt_rounded),
+      ('Painting', Icons.format_paint_rounded),
+      ('Delivery', Icons.delivery_dining_rounded),
+      ('Repairs', Icons.build_rounded),
+      ('AC Service', Icons.ac_unit_rounded),
+      ('Gardening', Icons.yard_rounded),
+      ('IT Support', Icons.phonelink_setup_rounded),
+      ('Moving', Icons.local_shipping_rounded),
+      ('Carpentry', Icons.handyman_rounded),
+    ];
+
+    Color tintFor(String label) {
+      final k = label.toLowerCase();
+      if (k.contains('plumb')) return Colors.blue;
+      if (k.contains('clean')) return Colors.teal;
+      if (k.contains('tutor')) return Colors.indigo;
+      if (k.contains('elect')) return Colors.amber;
+      if (k.contains('paint')) return Colors.purple;
+      if (k.contains('deliver')) return Colors.orange;
+      if (k.contains('repair') || k.contains('carp')) return Colors.brown;
+      if (k.contains('ac')) return Colors.cyan;
+      if (k.contains('garden')) return Colors.green;
+      if (k.contains('it')) return Colors.deepPurple;
+      if (k.contains('mov')) return Colors.deepOrange;
+      return cs.primary;
+    }
+
+    return SizedBox(
+      height: 56,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: cats.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (_, i) {
+          final (label, icon) = cats[i];
+          final tint = tintFor(label);
+          return GestureDetector(
+            onTap: () => onPick(label),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: cs.surface,
+                borderRadius: BorderRadius.circular(28),
+                border: Border.all(color: cs.outline.withOpacity(0.12)),
+                boxShadow: [
+                  BoxShadow(
+                      color: tint.withOpacity(0.06),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2)),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18, color: tint),
+                  const SizedBox(width: 8),
+                  Text(label,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w800)),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// ===== Recommended helpers =====
+class _RecommendedHelpers extends StatelessWidget {
+  const _RecommendedHelpers();
+
+  @override
+  Widget build(BuildContext context) {
+    final q = FirebaseFirestore.instance
+        .collection('users')
+        .where('isHelper', isEqualTo: true)
+        .orderBy('rating', descending: true)
+        .limit(8)
+        .snapshots();
+
+    return SizedBox(
+      height: 160,
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: q,
+        builder: (context, snap) {
+          if (!snap.hasData) {
+            return ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: 4,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (_, __) => _helperSkeleton(context),
+            );
+          }
+          final docs = snap.data!.docs;
+          if (docs.isEmpty) {
+            return _emptyCard(context, 'No recommendations yet');
+          }
+          return ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (ctx, i) {
+              final h = docs[i].data();
+              final name = (h['displayName'] ?? 'Helper').toString();
+              final tag = (h['tagline'] ?? 'Popular in your area').toString();
+              final id = docs[i].id;
+              return _HelperCardMini(
+                name: name,
+                subtitle: tag,
+                onProfile: () => Navigator.of(ctx).push(
+                  MaterialPageRoute(
+                      builder: (_) =>
+                          HelperPublicProfileScreen(helperId: id)),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _helperSkeleton(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: 280,
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outline.withOpacity(0.12)),
+      ),
+    );
+  }
+
+  Widget _emptyCard(BuildContext context, String text) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      height: 140,
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outline.withOpacity(0.12)),
+      ),
+      child: Text(text),
+    );
+  }
+}
+
+class _HelperCardMini extends StatelessWidget {
+  const _HelperCardMini(
+      {required this.name, required this.subtitle, required this.onProfile});
+  final String name;
+  final String subtitle;
+  final VoidCallback onProfile;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      width: 280,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outline.withOpacity(0.12)),
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            task.title,
-            style: _getTextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Icon(Icons.pin_drop_outlined, size: 16, color: Colors.white.withOpacity(0.7)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  task.locationAddress ?? 'Online',
-                  style: _getTextStyle(fontSize: 14, color: Colors.white.withOpacity(0.8)),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Chip(
-                label: Text(task.category),
-                backgroundColor: Colors.white.withOpacity(0.2),
-                labelStyle: _getTextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                side: BorderSide.none,
-              ),
-              Text(
-                "LKR ${task.budget.toStringAsFixed(0)}",
-                style: _getTextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.greenAccent.shade200),
-              ),
-            ],
-          )
+          Text(name,
+              style:
+              const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          Text(subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: cs.onSurfaceVariant)),
+          const Spacer(),
+          TextButton.icon(
+              onPressed: onProfile,
+              icon: const Icon(Icons.person_rounded),
+              label: const Text('View profile')),
         ],
       ),
     );
   }
 }
 
-// =========================================================================
-// --- ORIGINAL POSTER DASHBOARD (UNCHANGED) ---
-// =========================================================================
-class _PosterDashboardView extends StatefulWidget {
-  const _PosterDashboardView();
-
-  @override
-  State<_PosterDashboardView> createState() => _PosterDashboardViewState();
-}
-
-class _PosterDashboardViewState extends State<_PosterDashboardView> {
-  TaskMode _currentTaskMode = TaskMode.physical;
+/// ===== My posts =====
+class _MyRecentPostsRow extends StatelessWidget {
+  const _MyRecentPostsRow();
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final userProvider = Provider.of<UserProvider>(context);
-    final user = userProvider.user;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final cs = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Servana', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: Colors.white,
-        foregroundColor: Colors.black87,
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.chat_bubble_outline_rounded),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ChatListScreen())),
-          ),
-          IconButton(
-            icon: const Icon(Icons.notifications_outlined),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      backgroundColor: Colors.white,
-      body: RefreshIndicator(
-        onRefresh: () async => setState(() {}),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 16),
-              Text(
-                'Get Anything Done,\nFast & Easy.',
-                style: theme.textTheme.displaySmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: const Color(0xFF1A252D),
-                  height: 1.2,
+    final stream = uid == null
+        ? const Stream<QuerySnapshot<Map<String, dynamic>>>.empty()
+        : FirebaseFirestore.instance
+        .collection('tasks')
+        .where('posterId', isEqualTo: uid)
+        .orderBy('createdAt', descending: true)
+        .limit(6)
+        .snapshots();
+
+    return SizedBox(
+      height: 130,
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: stream,
+        builder: (context, snap) {
+          if (!snap.hasData) {
+            return ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: 3,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (_, __) => Container(
+                width: 220,
+                decoration: BoxDecoration(
+                  color: cs.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border:
+                  Border.all(color: cs.outline.withOpacity(0.12)),
                 ),
               ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PostTaskScreen())),
-                icon: const Icon(Icons.add),
-                label: const Text('Post a New Task', style: TextStyle(fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.teal,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  elevation: 2,
+            );
+          }
+          final docs = snap.data!.docs;
+          if (docs.isEmpty) {
+            return Container(
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: cs.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cs.outline.withOpacity(0.12)),
+              ),
+              child: const Text('You have no posts yet.'),
+            );
+          }
+          return ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (_, i) {
+              final t = docs[i].data();
+              final title = (t['title'] ?? 'Untitled').toString();
+              final status = (t['status'] ?? 'open').toString();
+              return Container(
+                width: 220,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: cs.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: cs.outline.withOpacity(0.12)),
                 ),
-              ),
-              const SizedBox(height: 32),
-              _buildTaskModeToggle(theme),
-              const SizedBox(height: 32),
-              Text("Popular Categories", style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              CategoryGridView(
-                key: ValueKey(_currentTaskMode),
-                taskMode: _currentTaskMode,
-                onCategoryTap: (category) => Navigator.push(context, MaterialPageRoute(builder: (_) => BrowseScreen(initialCategory: category))),
-              ),
-              const SizedBox(height: 32),
-              Text("Featured Helpers", style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              if (user != null) AiRecommendationSection(user: user),
-              const SizedBox(height: 100),
-            ],
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => showDialog(context: context, builder: (ctx) => const UrgentTaskDialog()),
-        label: const Text('Urgent Task'),
-        icon: const Icon(Icons.flash_on_rounded),
-        backgroundColor: Colors.redAccent,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    const Spacer(),
+                    Align(
+                      alignment: Alignment.bottomLeft,
+                      child: Chip(
+                        label: Text(status),
+                        visualDensity: VisualDensity.compact,
+                        side: BorderSide(
+                            color: cs.outline.withOpacity(0.12)),
+                      ),
+                    )
+                  ],
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }
+}
 
-  Widget _buildTaskModeToggle(ThemeData theme) {
-    return SegmentedButton<TaskMode>(
-      style: SegmentedButton.styleFrom(fixedSize: const Size.fromHeight(50)),
-      segments: const <ButtonSegment<TaskMode>>[
-        ButtonSegment(value: TaskMode.physical, label: Text('Physical'), icon: Icon(Icons.location_on_outlined)),
-        ButtonSegment(value: TaskMode.online, label: Text('Online'), icon: Icon(Icons.language)),
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, required this.onSeeAll});
+  final String title;
+  final VoidCallback onSeeAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+            child: Text(title,
+                style: const TextStyle(
+                    fontSize: 20, fontWeight: FontWeight.w900))),
+        TextButton(onPressed: onSeeAll, child: Text(t(context, 'See all'))),
       ],
-      selected: <TaskMode>{_currentTaskMode},
-      onSelectionChanged: (Set<TaskMode> newSelection) {
-        setState(() {
-          _currentTaskMode = newSelection.first;
-        });
-      },
     );
   }
 }

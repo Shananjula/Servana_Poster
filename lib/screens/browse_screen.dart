@@ -1,1030 +1,718 @@
-import 'dart:async';
-import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:provider/provider.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:intl/intl.dart';
-import 'package:flutter_animate/flutter_animate.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:servana/models/user_model.dart';
-import 'package:servana/providers/user_provider.dart';
-import 'package:servana/screens/conversation_screen.dart';
-import 'package:servana/screens/filter_screen.dart';
-import 'package:servana/screens/verification_status_screen.dart';
-import 'package:servana/services/ai_service.dart';
-// Firestore service now provides the TaskSortOption enum
-import 'package:servana/services/firestore_service.dart';
-import '../models/task_model.dart';
-import 'task_details_screen.dart';
-import 'helper_public_profile_screen.dart';
-import '../widgets/empty_state_widget.dart';
+// lib/screens/browse_screen.dart
+//
+// Browse helpers (poster)
+// - AppBar: "Browse helpers" + subtitle (category • mode • Open now • radius)
+// - List/Map toggle ONLY for Physical
+// - Reads route args: {'serviceMode': 'Physical'|'Online', 'openNow': bool}
+// - Search, Category chips, Quick filters, Sort menu
+// - "Clear all" button resets every filter
+// - Radius chips (2/5/10/20 km, All) for Physical; tolerant filtering
+// - Keeps state alive across tab switches (AutomaticKeepAliveClientMixin)
 
-enum ViewMode { list, map }
-enum HelperSortOption { proFirst, newest, highestRated, mostReviews }
-// The 'TaskSortOption' enum has been REMOVED from this file. It will now be
-// imported from 'firestore_service.dart' to resolve the error.
+import 'dart:math' as math;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+import 'package:servana/l10n/i18n.dart';
+import 'package:servana/screens/map_view_screen.dart';
+import 'package:servana/screens/notifications_screen.dart';
+import 'package:servana/widgets/helper_card.dart';
 
 class BrowseScreen extends StatefulWidget {
-  final String? initialCategory;
   const BrowseScreen({super.key, this.initialCategory});
+  final String? initialCategory;
 
   @override
   State<BrowseScreen> createState() => _BrowseScreenState();
 }
 
-class _BrowseScreenState extends State<BrowseScreen> {
-  final TextEditingController _searchController = TextEditingController();
-  Map<String, dynamic> _filters = {};
-  String _searchTerm = '';
-  ViewMode _viewMode = ViewMode.list;
-  HelperSortOption _helperSortOption = HelperSortOption.proFirst;
-  TaskSortOption _taskSortOption = TaskSortOption.newest;
-  bool _isAiSearching = false;
-  Timer? _debounce;
+class _BrowseScreenState extends State<BrowseScreen>
+    with AutomaticKeepAliveClientMixin {
+  // View state
+  bool _mapMode = false; // respected only for Physical
+  bool _openNow = false;
+  String _serviceMode = 'Physical'; // 'Online' | 'Physical'
+  String _sort = 'Best match';
+  String _query = '';
+  String? _category;
+
+  // Quick filters
+  bool _verifiedOnly = false;
+  bool _invoiceOnly = false;
+  bool _topRated = false; // >= 4.7
+
+  // Radius (km) for Physical; null = All
+  int? _radiusKm;
+
+  // Poster location (loaded once, tolerant schema)
+  double? _myLat, _myLng;
+
+  bool _appliedRouteArgs = false;
+  final _searchCtrl = TextEditingController();
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialCategory != null) {
-      _filters['category'] = widget.initialCategory;
+    _category = widget.initialCategory;
+    _loadMyLocation();
+  }
+
+  Future<void> _loadMyLocation() async {
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid == null) return;
+      final d = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final m = d.data() ?? {};
+      double? lat, lng;
+
+      // Try common nests
+      lat = _asDouble(_drill(m, ['location', 'lat'])) ??
+          _asDouble(_drill(m, ['geo', 'lat'])) ??
+          _asDouble(_drill(m, ['lastKnownLocation', 'lat']));
+      lng = _asDouble(_drill(m, ['location', 'lng'])) ??
+          _asDouble(_drill(m, ['geo', 'lng'])) ??
+          _asDouble(_drill(m, ['lastKnownLocation', 'lng']));
+
+      if (lat != null && lng != null && mounted) {
+        setState(() {
+          _myLat = lat;
+          _myLng = lng;
+        });
+      }
+    } catch (_) {}
+  }
+
+  dynamic _drill(Map<String, dynamic> m, List<String> keys) {
+    dynamic cur = m;
+    for (final k in keys) {
+      if (cur is Map && cur.containsKey(k)) {
+        cur = cur[k];
+      } else {
+        return null;
+      }
     }
-    _searchController.addListener(() {
-      if (_debounce?.isActive ?? false) _debounce!.cancel();
-      _debounce = Timer(const Duration(milliseconds: 500), () {
-        if (mounted) {
-          setState(() {
-            _searchTerm = _searchController.text;
-          });
+    return cur;
+  }
+
+  double? _asDouble(dynamic v) {
+    if (v is num) return v.toDouble();
+    try {
+      return double.parse(v.toString());
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_appliedRouteArgs) {
+      final args = ModalRoute.of(context)?.settings.arguments;
+      if (args is Map) {
+        final svc = args['serviceMode'];
+        final on = args['openNow'];
+        if (svc is String && (svc == 'Online' || svc == 'Physical')) {
+          _serviceMode = svc;
         }
-      });
-    });
+        if (on is bool) _openNow = on;
+      }
+      _appliedRouteArgs = true;
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
-    _searchController.dispose();
-    _debounce?.cancel();
+    _searchCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _performAiSearch() async {
-    final query = _searchController.text.trim();
-    if (query.isEmpty) return;
-
-    FocusScope.of(context).unfocus();
-    setState(() => _isAiSearching = true);
-
-    try {
-      final aiFilters = await AiService.parseSearchQuery(query);
-      if (mounted && aiFilters != null) {
-        setState(() {
-          _filters.addAll(aiFilters);
-          if (aiFilters.containsKey('searchTerm')) {
-            _searchController.text = aiFilters['searchTerm'];
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("AI filters applied!"), backgroundColor: Colors.green),
-          );
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("AI search failed: ${e.toString()}"), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isAiSearching = false);
-      }
-    }
+  void _setServiceMode(String v) {
+    // Online forces List
+    if (v == 'Online' && _mapMode) _mapMode = false;
+    setState(() => _serviceMode = v);
   }
 
-  void _openFilterScreen() async {
-    final result = await showModalBottomSheet<Map<String, dynamic>>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.9,
-        minChildSize: 0.5,
-        maxChildSize: 0.95,
-        builder: (_, controller) => FilterScreen(
-          scrollController: controller,
-          initialFilters: _filters,
-        ),
-      ),
-    );
-    if (result != null) {
-      setState(() => _filters = result);
+  void _clearAll() {
+    setState(() {
+      _searchCtrl.clear();
+      _query = '';
+      _category = null;
+      _openNow = false;
+      _serviceMode = 'Physical';
+      _mapMode = false;
+      _verifiedOnly = false;
+      _invoiceOnly = false;
+      _topRated = false;
+      _radiusKm = null;
+      _sort = 'Best match';
+    });
+  }
+
+  String _subtitle() {
+    final parts = <String>[];
+    parts.add(_category ?? 'All categories');
+    parts.add(_serviceMode);
+    if (_openNow) parts.add('Open now');
+    if (_serviceMode == 'Physical' && _radiusKm != null) {
+      parts.add('≤ $_radiusKm km');
     }
+    return parts.join(' • ');
   }
 
   @override
   Widget build(BuildContext context) {
-    final userProvider = context.watch<UserProvider>();
-    final activeMode = userProvider.activeMode;
-    final isVerified = userProvider.isVerifiedHelper;
-    final isRegisteredHelper = userProvider.user?.isHelper ?? false;
-    final bool showHelperUI = activeMode == AppMode.helper;
+    super.build(context);
+    final cs = Theme.of(context).colorScheme;
+    final showMapToggle = _serviceMode == 'Physical';
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(showHelperUI ? "Find Work" : "Find Help"),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t(context, 'Browse helpers')),
+            const SizedBox(height: 2),
+            Text(_subtitle(),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          ],
+        ),
+        centerTitle: false,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.filter_list_rounded),
-            onPressed: _openFilterScreen,
-            tooltip: 'Filter',
+          if (showMapToggle)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+              child: SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                      value: false,
+                      label: Text('List'),
+                      icon: Icon(Icons.view_list_rounded)),
+                  ButtonSegment(
+                      value: true,
+                      label: Text('Map'),
+                      icon: Icon(Icons.map_rounded)),
+                ],
+                selected: {_mapMode},
+                onSelectionChanged: (s) => setState(() => _mapMode = s.first),
+              ),
+            ),
+          TextButton(
+            onPressed: _clearAll,
+            child: const Text('Clear'),
           ),
-          SegmentedButton<ViewMode>(
-            segments: const [
-              ButtonSegment(
-                  value: ViewMode.list,
-                  icon: Icon(Icons.view_list_rounded, size: 20)),
-              ButtonSegment(
-                  value: ViewMode.map,
-                  icon: Icon(Icons.map_outlined, size: 20)),
-            ],
-            selected: {_viewMode},
-            onSelectionChanged: (Set<ViewMode> newSelection) {
-              setState(() => _viewMode = newSelection.first);
-            },
-            style: SegmentedButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.surface,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+          IconButton(
+            tooltip: 'Notifications',
+            icon: const Icon(Icons.notifications_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const NotificationsScreen()),
             ),
           ),
-          const SizedBox(width: 8),
         ],
       ),
       body: Column(
         children: [
+          // Search
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Column(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: (v) => setState(() => _query = v.trim()),
+              decoration: InputDecoration(
+                hintText: t(context, 'Search helpers'),
+                prefixIcon: const Icon(Icons.search_rounded),
+                filled: true,
+                fillColor: cs.surface,
+                border:
+                OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+            ),
+          ),
+
+          // Service mode + Open now
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
               children: [
-                TextField(
-                  controller: _searchController,
-                  decoration: InputDecoration(
-                    hintText: 'Search for tasks (e.g., "urgent cleaning")...',
-                    prefixIcon: const Icon(Icons.search),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
-                    ),
-                    filled: true,
-                    fillColor: Colors.grey[200],
-                    contentPadding: EdgeInsets.zero,
-                    suffixIcon: _isAiSearching
-                        ? const Padding(padding: EdgeInsets.all(12.0), child: CircularProgressIndicator(strokeWidth: 2))
-                        : IconButton(
-                      icon: const Icon(Icons.auto_awesome),
-                      tooltip: 'Search with AI',
-                      onPressed: _performAiSearch,
-                    ),
-                  ),
-                  onSubmitted: (_) => _performAiSearch(),
+                SegmentedButton<String>(
+                  segments: [
+                    ButtonSegment(value: 'Physical', label: Text(t(context, 'Physical'))),
+                    ButtonSegment(value: 'Online', label: Text(t(context, 'Online'))),
+                  ],
+                  selected: {_serviceMode},
+                  onSelectionChanged: (s) => _setServiceMode(s.first),
                 ),
-                const SizedBox(height: 8),
-                _buildSortDropdown(showHelperUI),
+                const Spacer(),
+                FilterChip(
+                  label: Text(t(context, 'Open now')),
+                  selected: _openNow,
+                  onSelected: (b) => setState(() => _openNow = b),
+                  side: BorderSide(color: cs.outline.withOpacity(0.12)),
+                ),
               ],
             ),
           ),
+
+          // Category chips (pre-select if passed)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: _CategoryChips(
+              selected: _category,
+              onPick: (label) => setState(() => _category = label),
+              onClear: () => setState(() => _category = null),
+            ),
+          ),
+
+          // Quick filters + Sort + Clear (Clear also in AppBar; kept here compact)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      FilterChip(
+                        label: Text(t(context, 'Verified only')),
+                        selected: _verifiedOnly,
+                        onSelected: (b) =>
+                            setState(() => _verifiedOnly = b),
+                        side: BorderSide(
+                            color: cs.outline.withOpacity(0.12)),
+                      ),
+                      FilterChip(
+                        label: Text(t(context, 'Top rated (4.7+)')),
+                        selected: _topRated,
+                        onSelected: (b) => setState(() => _topRated = b),
+                        side: BorderSide(
+                            color: cs.outline.withOpacity(0.12)),
+                      ),
+                      FilterChip(
+                        label: Text(t(context, 'Invoice available')),
+                        selected: _invoiceOnly,
+                        onSelected: (b) => setState(() => _invoiceOnly = b),
+                        side: BorderSide(
+                            color: cs.outline.withOpacity(0.12)),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  tooltip: 'Sort',
+                  onSelected: (s) => setState(() => _sort = s),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(
+                        value: 'Best match', child: Text('Best match')),
+                    PopupMenuItem(value: 'Nearest', child: Text('Nearest')),
+                    PopupMenuItem(
+                        value: 'Price: low to high',
+                        child: Text('Price: low to high')),
+                    PopupMenuItem(
+                        value: 'Rating: high to low',
+                        child: Text('Rating: high to low')),
+                    PopupMenuItem(
+                        value: 'Most booked', child: Text('Most booked')),
+                  ],
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: cs.surface,
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                      Border.all(color: cs.outline.withOpacity(0.12)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.sort_rounded, size: 18),
+                        const SizedBox(width: 6),
+                        Text(_sort),
+                        const SizedBox(width: 2),
+                        const Icon(Icons.expand_more_rounded, size: 18),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Radius chips (Physical only)
+          if (_serviceMode == 'Physical')
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              child: _RadiusChips(
+                selectedKm: _radiusKm,
+                onPick: (km) => setState(() => _radiusKm = km),
+              ),
+            ),
+
+          const SizedBox(height: 8),
           Expanded(
-            child: showHelperUI
-                ? (isRegisteredHelper && !isVerified)
-                ? const VerificationPrompt()
-                : TasksView(filters: _filters, viewMode: _viewMode, searchTerm: _searchTerm, sortOption: _taskSortOption)
-                : HelpersView(filters: _filters, viewMode: _viewMode, searchTerm: _searchTerm, sortOption: _helperSortOption),
+            child: (_serviceMode == 'Physical' && _mapMode)
+                ? BrowseMapView(
+              category: _category,
+              query: _query,
+              serviceMode: _serviceMode,
+              openNow: _openNow,
+            )
+                : _HelperList(
+              category: _category,
+              query: _query,
+              serviceMode: _serviceMode,
+              openNow: _openNow,
+              sort: _sort,
+              verifiedOnly: _verifiedOnly,
+              invoiceOnly: _invoiceOnly,
+              topRated: _topRated,
+              myLat: _myLat,
+              myLng: _myLng,
+              radiusKm: _radiusKm,
+            ),
           ),
         ],
       ),
     );
   }
-
-  Widget _buildSortDropdown(bool isHelperView) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.grey[200],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: DropdownButton<Enum>(
-          value: isHelperView ? _taskSortOption : _helperSortOption,
-          underline: const SizedBox(),
-          isDense: true,
-          items: isHelperView
-              ? TaskSortOption.values.map((option) {
-            return DropdownMenuItem<Enum>(
-              value: option,
-              child: Text(_getTaskSortOptionName(option)),
-            );
-          }).toList()
-              : HelperSortOption.values.map((option) {
-            return DropdownMenuItem<Enum>(
-              value: option,
-              child: Text(_getHelperSortOptionName(option)),
-            );
-          }).toList(),
-          onChanged: (value) {
-            setState(() {
-              if (isHelperView && value is TaskSortOption) {
-                _taskSortOption = value;
-              } else if (!isHelperView && value is HelperSortOption) {
-                _helperSortOption = value;
-              }
-            });
-          },
-        ),
-      ),
-    );
-  }
-
-  String _getHelperSortOptionName(HelperSortOption option) {
-    switch (option) {
-      case HelperSortOption.proFirst: return 'Sort by: Pro Helpers First';
-      case HelperSortOption.highestRated: return 'Sort by: Highest Rated';
-      case HelperSortOption.mostReviews: return 'Sort by: Most Reviews';
-      case HelperSortOption.newest: return 'Sort by: Newest';
-    }
-  }
-
-  String _getTaskSortOptionName(TaskSortOption option) {
-    switch (option) {
-      case TaskSortOption.highestBudget: return 'Sort by: Highest Budget';
-      case TaskSortOption.newest: return 'Sort by: Newest';
-    }
-  }
 }
 
-// --- TASKS VIEW (UPDATED) ---
-class TasksView extends StatefulWidget {
-  final Map<String, dynamic> filters;
-  final ViewMode viewMode;
-  final String searchTerm;
-  final TaskSortOption sortOption;
-  const TasksView({super.key, required this.filters, required this.viewMode, required this.searchTerm, required this.sortOption});
+// ===== Category chips (inline) =====
 
-  @override
-  State<TasksView> createState() => _TasksViewState();
-}
-
-class _TasksViewState extends State<TasksView> {
-  Position? _currentPosition;
-  final FirestoreService _firestoreService = FirestoreService();
-
-  @override
-  void initState() {
-    super.initState();
-    _getCurrentLocation();
-  }
-
-  Future<void> _getCurrentLocation() async {
-    try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return;
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return;
-      }
-      if (permission == LocationPermission.deniedForever) return;
-      final position = await Geolocator.getCurrentPosition();
-      if (mounted) setState(() => _currentPosition = position);
-    } catch (e) {
-      print("Could not get user location for filtering: $e");
-    }
-  }
+class _CategoryChips extends StatelessWidget {
+  const _CategoryChips(
+      {required this.selected, required this.onPick, required this.onClear});
+  final String? selected;
+  final void Function(String) onPick;
+  final VoidCallback onClear;
 
   @override
   Widget build(BuildContext context) {
-    final userProvider = context.watch<UserProvider>();
-    final currentUser = userProvider.user;
+    final cs = Theme.of(context).colorScheme;
+    const cats = <(String, IconData)>[
+      ('Plumbing', Icons.plumbing_rounded),
+      ('Cleaning', Icons.cleaning_services_rounded),
+      ('Tutoring', Icons.menu_book_rounded),
+      ('Electrical', Icons.electric_bolt_rounded),
+      ('Painting', Icons.format_paint_rounded),
+      ('Delivery', Icons.delivery_dining_rounded),
+      ('Repairs', Icons.build_rounded),
+      ('AC Service', Icons.ac_unit_rounded),
+      ('Gardening', Icons.yard_rounded),
+      ('IT Support', Icons.phonelink_setup_rounded),
+      ('Moving', Icons.local_shipping_rounded),
+      ('Carpentry', Icons.handyman_rounded),
+    ];
 
-    if (currentUser == null) return const Center(child: Text("Please log in."));
-
-    List<String> keywordsForQuery;
-    if (widget.searchTerm.isNotEmpty) {
-      keywordsForQuery = widget.searchTerm.toLowerCase().split(' ').where((s) => s.length > 1).toList();
-    } else {
-      keywordsForQuery = currentUser.skills;
-    }
-
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _firestoreService.getTasksByKeywords(
-        keywords: keywordsForQuery,
-        currentUserId: currentUser.id,
-        // The error is fixed because widget.sortOption is now the same type
-        // as the one expected by the getTasksByKeywords method.
-        sortOption: widget.sortOption,
-      ),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return _buildSkeletonListView(_TaskCardSkeleton());
-        }
-        if (snapshot.hasError) {
-          return Center(child: Text('Error: ${snapshot.error}\n\nNote: This might be a missing Firestore index. Check your debug console for a link to create it.'));
-        }
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const EmptyStateWidget(
-              icon: Icons.search_off_rounded,
-              title: "No Tasks Found",
-              message: "Try adjusting your filters or search terms. Your skills might not match any open tasks right now.");
-        }
-
-        final tasks = snapshot.data!.docs.map((doc) => Task.fromFirestore(doc)).toList();
-
-        final double maxDistance = (widget.filters['distance'] as num? ?? 50.0).toDouble();
-        List<Task> distanceFilteredTasks = tasks;
-
-        if (_currentPosition != null && maxDistance < 50) {
-          distanceFilteredTasks = tasks.where((task) {
-            if (task.location == null) return true; // Always include online tasks
-            final distanceInMeters = Geolocator.distanceBetween(
-              _currentPosition!.latitude,
-              _currentPosition!.longitude,
-              task.location!.latitude,
-              task.location!.longitude,
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: cats.length + (selected != null ? 1 : 0),
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (_, i) {
+          if (i == 0 && selected != null) {
+            return InputChip(
+              label: Text(selected!),
+              onDeleted: onClear,
+              side: BorderSide(color: cs.outline.withOpacity(0.12)),
             );
-            return (distanceInMeters / 1000) <= maxDistance;
-          }).toList();
-        }
-
-        // Additional client-side filtering from the filter screen
-        final filteredTasks = distanceFilteredTasks.where((task) {
-          final categoryFilter = widget.filters['category'];
-          final subCategoryFilter = widget.filters['subCategory'];
-          final minBudget = widget.filters['rate_min'];
-          final maxBudget = widget.filters['rate_max'];
-
-          if (categoryFilter != null && categoryFilter != 'All' && task.category != categoryFilter) return false;
-          if (subCategoryFilter != null && subCategoryFilter != 'All' && task.subCategory != subCategoryFilter) return false;
-          if (minBudget != null && task.budget < minBudget) return false;
-          if (maxBudget != null && task.budget > maxBudget) return false;
-
-          return true;
-        }).toList();
-
-
-        if (filteredTasks.isEmpty) {
-          return const EmptyStateWidget(
-              icon: Icons.filter_alt_off_outlined,
-              title: "No Matching Tasks",
-              message: "No tasks match your current search and filter combination. Try adjusting them.");
-        }
-
-        final physicalTasks = filteredTasks.where((task) => task.location != null && task.taskType == 'physical').toList();
-
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          child: (widget.viewMode == ViewMode.list || physicalTasks.isEmpty)
-              ? _buildTaskListView(filteredTasks)
-              : _buildTaskMapView(context, physicalTasks),
-        );
-      },
-    );
-  }
-
-  Widget _buildTaskListView(List<Task> tasks) {
-    return ListView.builder(
-      key: const ValueKey('task_list'),
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      itemCount: tasks.length,
-      itemBuilder: (context, index) => TaskCard(task: tasks[index]),
-    );
-  }
-
-  Widget _buildTaskMapView(BuildContext context, List<Task> tasks) {
-    final Set<Marker> markers = tasks.map((task) {
-      return Marker(
-        markerId: MarkerId(task.id),
-        position: LatLng(task.location!.latitude, task.location!.longitude),
-        infoWindow: InfoWindow(
-          title: task.title,
-          snippet: 'Budget: LKR ${NumberFormat("#,##0").format(task.budget)}',
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => TaskDetailsScreen(task: task))),
-        ),
-      );
-    }).toSet();
-
-    return GoogleMap(
-      key: const ValueKey('task_map'),
-      initialCameraPosition: CameraPosition(target: _currentPosition != null ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude) : const LatLng(6.9271, 79.8612), zoom: 12),
-      markers: markers,
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
+          }
+          final idx = selected != null ? i - 1 : i;
+          final (label, icon) = cats[idx];
+          final sel = selected != null &&
+              selected!.toLowerCase() == label.toLowerCase();
+          return ChoiceChip(
+            label: Text(label,
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+            avatar: Icon(icon, size: 18),
+            selected: sel,
+            onSelected: (_) => onPick(label),
+            side: BorderSide(color: cs.outline.withOpacity(0.12)),
+            backgroundColor: cs.surface,
+          );
+        },
+      ),
     );
   }
 }
 
-// --- ALL OTHER WIDGETS AND CLASSES (HelpersView, TaskCard, etc.) ARE UNCHANGED ---
-class HelpersView extends StatefulWidget {
-  final Map<String, dynamic> filters;
-  final ViewMode viewMode;
-  final String searchTerm;
-  final HelperSortOption sortOption;
-  const HelpersView({super.key, required this.filters, required this.viewMode, required this.searchTerm, required this.sortOption});
+// ===== Radius chips =====
+
+class _RadiusChips extends StatelessWidget {
+  const _RadiusChips({required this.selectedKm, required this.onPick});
+  final int? selectedKm;
+  final void Function(int?) onPick;
 
   @override
-  State<HelpersView> createState() => _HelpersViewState();
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final options = <int?>[2, 5, 10, 20, null]; // null = All
+    final labels = <int?, String>{
+      2: '2 km',
+      5: '5 km',
+      10: '10 km',
+      20: '20 km',
+      null: 'All'
+    };
+
+    return Wrap(
+      spacing: 8,
+      children: [
+        for (final km in options)
+          ChoiceChip(
+            label: Text(labels[km]!,
+                style: const TextStyle(fontWeight: FontWeight.w700)),
+            selected: selectedKm == km,
+            onSelected: (_) => onPick(km),
+            side: BorderSide(color: cs.outline.withOpacity(0.12)),
+          ),
+      ],
+    );
+  }
 }
 
-class _HelpersViewState extends State<HelpersView> {
-  final Completer<GoogleMapController> _mapController = Completer();
-  Stream<QuerySnapshot>? _helpersStream;
-  Position? _currentPosition;
+// ===== Helper list =====
+
+class _HelperList extends StatelessWidget {
+  const _HelperList({
+    required this.category,
+    required this.query,
+    required this.serviceMode,
+    required this.openNow,
+    required this.sort,
+    required this.verifiedOnly,
+    required this.invoiceOnly,
+    required this.topRated,
+    required this.myLat,
+    required this.myLng,
+    required this.radiusKm,
+  });
+
+  final String? category;
+  final String query;
+  final String serviceMode;
+  final bool openNow;
+  final String sort;
+  final bool verifiedOnly;
+  final bool invoiceOnly;
+  final bool topRated;
+  final double? myLat;
+  final double? myLng;
+  final int? radiusKm;
 
   @override
-  void initState() {
-    super.initState();
-    _buildQuery();
-    _getCurrentLocationAndCenterMap();
-  }
-
-  @override
-  void didUpdateWidget(covariant HelpersView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.filters != widget.filters || oldWidget.sortOption != widget.sortOption) {
-      _buildQuery();
-    }
-  }
-
-  Future<void> _getCurrentLocationAndCenterMap() async {
-    try {
-      final position = await Geolocator.getCurrentPosition();
-      if (mounted) {
-        setState(() {
-          _currentPosition = position;
-        });
-        final controller = await _mapController.future;
-        controller.animateCamera(CameraUpdate.newCameraPosition(
-          CameraPosition(target: LatLng(position.latitude, position.longitude), zoom: 12),
-        ));
-      }
-    } catch (e) {
-      print("Could not get user location: $e");
-    }
-  }
-
-  void _buildQuery() {
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-    if (currentUserId == null) return;
-
-    Query query = FirebaseFirestore.instance
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final base = FirebaseFirestore.instance
         .collection('users')
         .where('isHelper', isEqualTo: true)
-        .where('verificationStatus', isEqualTo: 'verified')
-        .where(FieldPath.documentId, isNotEqualTo: currentUserId);
+        .limit(100);
 
-    widget.filters.forEach((key, value) {
-      if (key != 'distance' && key != 'searchTerm' && value != null && value != 'All' && value.toString().isNotEmpty) {
-        if (key == 'category') query = query.where('skills', arrayContains: value);
-        else if (key == 'minRating') query = query.where('averageRating', isGreaterThanOrEqualTo: value);
-      }
-    });
-
-    switch (widget.sortOption) {
-      case HelperSortOption.proFirst:
-        query = query.orderBy('isProMember', descending: true).orderBy('averageRating', descending: true);
-        break;
-      case HelperSortOption.highestRated:
-        query = query.orderBy('averageRating', descending: true);
-        break;
-      case HelperSortOption.mostReviews:
-        query = query.orderBy('ratingCount', descending: true);
-        break;
-      case HelperSortOption.newest:
-      // You might need a 'createdAt' field on your user document for this to work
-      // query = query.orderBy('createdAt', descending: true);
-        break;
-    }
-
-    setState(() {
-      _helpersStream = query.snapshots();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: _helpersStream,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return _buildSkeletonListView(_HelperCardSkeleton());
-        }
-        if (snapshot.hasError) {
-          return Center(child: Text('Error: ${snapshot.error} \n\nNote: This might be due to a missing Firestore index. Check the debug console for a link to create it.'));
-        }
-        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-          return const EmptyStateWidget(
-              icon: Icons.person_search_outlined,
-              title: "No Helpers Found",
-              message: "Try adjusting your filters or expanding your search area.");
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: base.snapshots(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: 8,
+            separatorBuilder: (_, __) => const SizedBox(height: 12),
+            itemBuilder: (_, i) => Container(
+              height: 132,
+              decoration: BoxDecoration(
+                color: cs.surface,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: cs.outline.withOpacity(0.12)),
+              ),
+            ),
+          );
         }
 
-        final helpers = snapshot.data!.docs
-            .map((doc) => HelpifyUser.fromFirestore(
-            doc as DocumentSnapshot<Map<String, dynamic>>))
-            .toList();
+        var helpers =
+        snap.data!.docs.map((d) => d.data()..['id'] = d.id).toList();
 
-        final double maxDistance = (widget.filters['distance'] as num? ?? 50.0).toDouble();
-        List<HelpifyUser> distanceFilteredHelpers = helpers;
-
-        if (_currentPosition != null && maxDistance < 50) {
-          distanceFilteredHelpers = helpers.where((helper) {
-            if (helper.workLocation == null) return false;
-            final distanceInMeters = Geolocator.distanceBetween(
-              _currentPosition!.latitude,
-              _currentPosition!.longitude,
-              helper.workLocation!.latitude,
-              helper.workLocation!.longitude,
-            );
-            return (distanceInMeters / 1000) <= maxDistance;
+        // Category
+        if (category != null && category!.isNotEmpty) {
+          helpers = helpers.where((h) {
+            final cats =
+            (h['categories'] ?? h['primaryCategory'] ?? '')
+                .toString()
+                .toLowerCase();
+            return cats.contains(category!.toLowerCase());
+          }).toList();
+        }
+        // Search
+        if (query.isNotEmpty) {
+          helpers = helpers.where((h) {
+            final hay =
+            '${h['displayName'] ?? ''} ${h['bio'] ?? ''} ${h['categories'] ?? ''}'
+                .toString()
+                .toLowerCase();
+            return hay.contains(query.toLowerCase());
+          }).toList();
+        }
+        // Mode
+        if (serviceMode == 'Online') {
+          helpers = helpers
+              .where((h) => (h['supportsOnline'] ?? false) == true)
+              .toList();
+        } else {
+          helpers = helpers
+              .where((h) => (h['supportsPhysical'] ?? true) == true)
+              .toList();
+        }
+        // Open now
+        if (openNow) {
+          helpers = helpers
+              .where((h) => (h['presence']?['isLive'] ?? false) == true)
+              .toList();
+        }
+        // Verified / invoice / top rated
+        if (verifiedOnly) {
+          helpers =
+              helpers.where((h) => (h['verifiedId'] ?? false) == true).toList();
+        }
+        if (invoiceOnly) {
+          helpers = helpers
+              .where((h) => (h['providesInvoice'] ?? false) == true)
+              .toList();
+        }
+        if (topRated) {
+          helpers = helpers.where((h) {
+            final r = (h['rating'] is num)
+                ? (h['rating'] as num).toDouble()
+                : 0.0;
+            return r >= 4.7;
           }).toList();
         }
 
-        final filteredHelpers = widget.searchTerm.isEmpty
-            ? distanceFilteredHelpers
-            : distanceFilteredHelpers.where((helper) {
-          final searchTermLower = widget.searchTerm.toLowerCase();
-          return (helper.displayName?.toLowerCase().contains(searchTermLower) ?? false) ||
-              helper.skills.any((skill) => skill.toLowerCase().contains(searchTermLower));
-        }).toList();
-
-        if (filteredHelpers.isEmpty) {
-          return const EmptyStateWidget(
-              icon: Icons.person_search_outlined,
-              title: "No Matching Helpers",
-              message: "Try a different search term or adjust your filters.");
+        // Radius (if we know poster location)
+        if (serviceMode == 'Physical' &&
+            radiusKm != null &&
+            myLat != null &&
+            myLng != null) {
+          helpers = helpers.where((h) {
+            // If helper.distanceKm exists, use it directly
+            final dk = (h['distanceKm'] is num)
+                ? (h['distanceKm'] as num).toDouble()
+                : null;
+            if (dk != null) return dk <= radiusKm!;
+            final lat = (h['location']?['lat'] is num)
+                ? (h['location']['lat'] as num).toDouble()
+                : null;
+            final lng = (h['location']?['lng'] is num)
+                ? (h['location']['lng'] as num).toDouble()
+                : null;
+            if (lat == null || lng == null) return true; // keep if no coords
+            final distKm = _haversine(myLat!, myLng!, lat, lng);
+            return distKm <= radiusKm!;
+          }).toList();
         }
 
-        final helpersWithLocation =
-        filteredHelpers.where((h) => h.workLocation != null).toList();
+        // Sorting / scoring
+        final lat0 = myLat ?? 0.0;
+        final lng0 = myLng ?? 0.0;
+        helpers.sort((a, b) {
+          final sa = _score(a, lat0, lng0, sort);
+          final sb = _score(b, lat0, lng0, sort);
+          return sb.compareTo(sa);
+        });
 
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 400),
-          transitionBuilder: (child, animation) =>
-              FadeTransition(opacity: animation, child: child),
-          child: (widget.viewMode == ViewMode.list || helpersWithLocation.isEmpty)
-              ? _buildHelperListView(filteredHelpers)
-              : _buildHelperMapView(context, helpersWithLocation),
-        );
-      },
-    );
-  }
-
-  Widget _buildHelperListView(List<HelpifyUser> helpers) {
-    return ListView.builder(
-      key: const ValueKey('helper_list'),
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      itemCount: helpers.length,
-      itemBuilder: (context, index) => HelperCard(helper: helpers[index]),
-    );
-  }
-
-  Widget _buildHelperMapView(BuildContext context, List<HelpifyUser> helpers) {
-    final Set<Marker> markers = helpers.map((helper) {
-      return Marker(
-        markerId: MarkerId(helper.id),
-        position:
-        LatLng(helper.workLocation!.latitude, helper.workLocation!.longitude),
-        icon: helper.isProMember
-            ? BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueViolet)
-            : BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-        infoWindow: InfoWindow(
-          title: helper.displayName ?? 'Servana Helper',
-          snippet:
-          'Rating: ${helper.averageRating.toStringAsFixed(1)} ★ (${helper.ratingCount})',
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => HelperPublicProfileScreen(helperId: helper.id))),
-        ),
-      );
-    }).toSet();
-
-    return GoogleMap(
-      key: const ValueKey('helper_map'),
-      initialCameraPosition:
-      const CameraPosition(target: LatLng(6.9271, 79.8612), zoom: 12),
-      onMapCreated: (controller) {
-        if (!_mapController.isCompleted) {
-          _mapController.complete(controller);
-        }
-      },
-      markers: markers,
-      myLocationEnabled: true,
-      myLocationButtonEnabled: true,
-    );
-  }
-}
-
-Widget _buildSkeletonListView(Widget skeletonCard) {
-  return ListView.builder(
-    padding: const EdgeInsets.all(16.0),
-    itemCount: 5,
-    itemBuilder: (context, index) => skeletonCard,
-  );
-}
-
-class VerificationPrompt extends StatelessWidget {
-  const VerificationPrompt({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return EmptyStateWidget(
-      icon: Icons.shield_outlined,
-      title: 'Verification Required',
-      message:
-      'To ensure community safety, you must verify your profile before you can browse and accept tasks.',
-      actionButton: ElevatedButton.icon(
-        icon: const Icon(Icons.verified_user_outlined),
-        label: const Text('Start Verification'),
-        onPressed: () {
-          Navigator.of(context).push(MaterialPageRoute(
-            builder: (_) => const VerificationStatusScreen(),
-          ));
-        },
-      ),
-    );
-  }
-}
-
-class TaskCard extends StatelessWidget {
-  final Task task;
-  const TaskCard({Key? key, required this.task}) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isOnline = task.taskType == 'online';
-    final IconData locationIcon =
-    isOnline ? Icons.language_rounded : Icons.location_on_outlined;
-    final String locationText =
-    isOnline ? 'Online / Remote' : task.locationAddress ?? 'Physical Location';
-
-    return Card(
-      elevation: 2.0,
-      margin: const EdgeInsets.only(bottom: 16.0),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () {
-          Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (context) => TaskDetailsScreen(task: task)));
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                          color: theme.primaryColor.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8)),
-                      child: Text(
-                        '${task.category} ${task.subCategory != null ? "> ${task.subCategory}" : ""}'
-                            .toUpperCase(),
-                        style: TextStyle(
-                            color: theme.primaryColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 12),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                  Text('LKR ${NumberFormat("#,##0").format(task.budget)}',
-                      style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87)),
-                ],
+        if (helpers.isEmpty) {
+          return Center(
+            child: Container(
+              padding:
+              const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              decoration: BoxDecoration(
+                color: cs.surface,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: cs.outline.withOpacity(0.12)),
               ),
-              const SizedBox(height: 12),
-              Text(task.title,
-                  style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black87)),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Icon(locationIcon, color: Colors.grey[600], size: 16),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      locationText,
-                      style: TextStyle(color: Colors.grey[700], fontSize: 14),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class HelperCard extends StatefulWidget {
-  final HelpifyUser helper;
-  const HelperCard({Key? key, required this.helper}) : super(key: key);
-
-  @override
-  State<HelperCard> createState() => _HelperCardState();
-}
-
-class _HelperCardState extends State<HelperCard> {
-  bool _isContacting = false;
-  final FirestoreService _firestoreService = FirestoreService();
-
-  void _onContactPressed(BuildContext context) async {
-    if (_isContacting) return;
-
-    setState(() => _isContacting = true);
-
-    try {
-      final currentUser = context.read<UserProvider>().user;
-      if (currentUser == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("You must be logged in to contact a helper.")),
-        );
-        return;
-      }
-
-      final existingChannelId = await _firestoreService.getDirectChatChannelId(currentUser.id, widget.helper.id);
-
-      if (!context.mounted) return;
-
-      if (existingChannelId != null) {
-        Navigator.of(context).push(MaterialPageRoute(
-          builder: (ctx) => ConversationScreen(
-            chatChannelId: existingChannelId,
-            otherUserName: widget.helper.displayName ?? 'Helper',
-            otherUserAvatarUrl: widget.helper.photoURL,
-            taskTitle: "Direct Inquiry",
-          ),
-        ));
-      } else {
-        final bool? confirmPayment = await showDialog<bool>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: Text("Contact ${widget.helper.displayName}?"),
-            content: const Text(
-                "A one-time fee of 20 Serv Coins will be deducted to start a private chat. Do you want to continue?"),
-            actions: [
-              TextButton(
-                child: const Text("Cancel"),
-                onPressed: () => Navigator.of(dialogContext).pop(false),
-              ),
-              ElevatedButton(
-                child: const Text("Confirm & Pay"),
-                onPressed: () => Navigator.of(dialogContext).pop(true),
-              ),
-            ],
-          ),
-        );
-
-        if (confirmPayment == true) {
-          final String newChatChannelId = await _firestoreService.initiateDirectContact(
-            currentUser: currentUser,
-            helper: widget.helper,
+              child: Text(t(context, 'No matching helpers')),
+            ),
           );
-
-          if (!context.mounted) return;
-
-          Navigator.of(context).push(MaterialPageRoute(
-            builder: (ctx) => ConversationScreen(
-              chatChannelId: newChatChannelId,
-              otherUserName: widget.helper.displayName ?? 'Helper',
-              otherUserAvatarUrl: widget.helper.photoURL,
-              taskTitle: "Direct Inquiry",
-            ),
-          ));
         }
-      }
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isContacting = false);
-      }
-    }
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Card(
-      elevation: 2.0,
-      margin: const EdgeInsets.only(bottom: 16.0),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                GestureDetector(
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              HelperPublicProfileScreen(helperId: widget.helper.id))),
-                  child: CircleAvatar(
-                    radius: 30,
-                    backgroundImage:
-                    widget.helper.photoURL != null ? NetworkImage(widget.helper.photoURL!) : null,
-                    child: widget.helper.photoURL == null
-                        ? const Icon(Icons.person, size: 30)
-                        : null,
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => HelperPublicProfileScreen(
-                                helperId: widget.helper.id))),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Flexible(
-                              child: Text(widget.helper.displayName ?? 'Servana Helper',
-                                style: theme.textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.bold),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            if (widget.helper.isProMember)
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: Colors.purple,
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                child: const Text(
-                                  'PRO',
-                                  style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                              )
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            const Icon(Icons.star, color: Colors.amber, size: 16),
-                            const SizedBox(width: 4),
-                            Text(
-                                '${widget.helper.averageRating.toStringAsFixed(1)} (${widget.helper.ratingCount} reviews)',
-                                style: theme.textTheme.bodyMedium),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                _isContacting
-                    ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2))
-                    : IconButton(
-                  icon: Icon(Icons.chat_bubble_outline_rounded,
-                      color: theme.primaryColor),
-                  onPressed: () => _onContactPressed(context),
-                  tooltip: "Contact Helper",
-                ),
-              ],
-            ),
-            if (widget.helper.skills.isNotEmpty) ...[
-              const Divider(height: 24),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Wrap(
-                  spacing: 8.0,
-                  runSpacing: 4.0,
-                  children: widget.helper.skills
-                      .take(3)
-                      .map((skill) => Chip(
-                    label: Text(skill),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    labelStyle: const TextStyle(fontSize: 12),
-                    backgroundColor:
-                    theme.colorScheme.secondary.withOpacity(0.1),
-                    side: BorderSide.none,
-                  ))
-                      .toList(),
-                ),
-              )
-            ]
-          ],
-        ),
-      ),
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: helpers.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 12),
+          itemBuilder: (ctx, i) {
+            final h = helpers[i];
+            return HelperCard(
+              data: h,
+              onViewProfile: null,
+            );
+          },
+        );
+      },
     );
   }
 }
 
-class _TaskCardSkeleton extends StatelessWidget {
-  const _TaskCardSkeleton();
+// ===== Utilities =====
 
-  Widget _buildPlaceholder({double? width, double height = 16}) {
-    return Container(
-      width: width,
-      height: height,
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(8),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 2.0,
-      margin: const EdgeInsets.only(bottom: 16.0),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                _buildPlaceholder(width: 120, height: 24),
-                _buildPlaceholder(width: 80, height: 24),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _buildPlaceholder(height: 28),
-            const SizedBox(height: 8),
-            _buildPlaceholder(width: 200),
-          ],
-        ),
-      ),
-    );
-  }
+double _haversine(double lat1, double lon1, double lat2, double lon2) {
+  const R = 6371.0; // km
+  double toRad(double d) => d * math.pi / 180.0;
+  final dLat = toRad(lat2 - lat1);
+  final dLon = toRad(lon2 - lon1);
+  final a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+      math.cos(toRad(lat1)) *
+          math.cos(toRad(lat2)) *
+          math.sin(dLon / 2) *
+          math.sin(dLon / 2);
+  final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  return R * c;
 }
 
-class _HelperCardSkeleton extends StatelessWidget {
-  const _HelperCardSkeleton();
+double _score(Map<String, dynamic> h, double myLat, double myLng, String sort) {
+  final rating =
+  (h['rating'] is num) ? (h['rating'] as num).toDouble() : 4.6;
+  final reviews = (h['reviewsCount'] is num)
+      ? (h['reviewsCount'] as num).toDouble()
+      : 0.0;
+  final onTime =
+  (h['onTimeRate'] is num) ? (h['onTimeRate'] as num).toDouble() : 0.95;
+  final replyMins =
+  (h['replyMins'] is num) ? (h['replyMins'] as num).toDouble() : 15.0;
+  final booked = (h['bookedCount'] is num)
+      ? (h['bookedCount'] as num).toDouble()
+      : 0.0;
+  final lat = (h['location']?['lat'] is num)
+      ? (h['location']['lat'] as num).toDouble()
+      : 0.0;
+  final lng = (h['location']?['lng'] is num)
+      ? (h['location']['lng'] as num).toDouble()
+      : 0.0;
+  final distKm = _haversine(myLat, myLng, lat, lng);
 
-  Widget _buildPlaceholder({double? width, double height = 16}) {
-    return Container(
-      width: width,
-      height: height,
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(8),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 2.0,
-      margin: const EdgeInsets.only(bottom: 16.0),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          children: [
-            CircleAvatar(radius: 30, backgroundColor: Colors.grey.shade200),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildPlaceholder(width: 150, height: 20),
-                  const SizedBox(height: 8),
-                  _buildPlaceholder(width: 100),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  switch (sort) {
+    case 'Nearest':
+      return -distKm;
+    case 'Price: low to high':
+      return -((h['priceFrom'] ?? 0) * 1.0);
+    case 'Rating: high to low':
+      return rating;
+    case 'Most booked':
+      return booked;
+    default: // Best match (blend)
+      final proximityScore = 1 / (1 + distKm);
+      final replyScore = 1 / (1 + replyMins / 30);
+      final reviewsBoost = reviews > 5 ? 0.1 : 0.0;
+      return rating * 0.45 +
+          onTime * 0.15 +
+          proximityScore * 0.15 +
+          replyScore * 0.15 +
+          reviewsBoost;
   }
 }

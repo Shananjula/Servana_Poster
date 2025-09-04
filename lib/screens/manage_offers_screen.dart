@@ -1,341 +1,681 @@
-import 'package:flutter/material.dart';
+// lib/screens/manage_offers_screen.dart
+//
+// Manage offers for a task (Poster) + see/withdraw your offers (Helper).
+// - If taskId is provided → show offers for THAT task (poster-focused).
+// - If no taskId → show relevant offers grouped by task (role-aware).
+// - Actions (Poster): Accept · Decline · Counter · Contact (fee-gated).
+// - Actions (Helper): Edit · Withdraw.
+// - Direct-contact fee: guarded with a Cloud Function 'chargeDirectContactFee'.
+//   The function should:
+//     * check if poster has previously contacted this helper (direct or via past task)
+//     * if not, charge a fee percentage (decided server-side)
+//     * return { ok: true, channelId: '...' } on success
+// - Safe fallbacks if your schema differs (top-level 'offers' or subcollection 'tasks/{id}/offers').
+//
+// Assumed fields (aligns with your offer_model.dart / task_model.dart):
+//   offers: {
+//     id, taskId, posterId, helperId, price, message, status('pending'|'accepted'|'declined'|'withdrawn'|'counter'),
+//     createdAt, updatedAt
+//   }
+//   tasks: { title, category, price, status, posterId, helperId? }
+//
+// NOTE: Security & payments must be enforced server-side (Cloud Functions + Firestore rules).
+//       Client only calls functions and writes minimal status transitions.
+
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:intl/intl.dart';
-import 'package:servana/services/firestore_service.dart';
-import 'package:url_launcher/url_launcher.dart';
-import '../models/task_model.dart';
-import '../models/offer_model.dart';
-import '../models/user_model.dart';
-import 'helper_public_profile_screen.dart';
-import 'conversation_screen.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
-class ManageOffersScreen extends StatelessWidget {
-  final Task task;
-  final HelpifyUser currentUser;
+import 'package:servana/screens/conversation_screen.dart';
+import 'package:servana/screens/task_details_screen.dart';
+import 'package:servana/screens/chat_list_screen.dart';
 
-  const ManageOffersScreen({
-    Key? key,
-    required this.task,
-    required this.currentUser,
-  }) : super(key: key);
+class ManageOffersScreen extends StatefulWidget {
+  const ManageOffersScreen({super.key, this.taskId, this.task, this.currentUser});
+  final String? taskId;
+  final dynamic task;          // keep it flexible (Task? if you imported)
+  final dynamic currentUser;   // HelpifyUser? if you imported
+
+  @override
+  State<ManageOffersScreen> createState() => _ManageOffersScreenState();
+}
+
+class _ManageOffersScreenState extends State<ManageOffersScreen> with SingleTickerProviderStateMixin {
+  late final TabController _tab;
+  String _sort = 'recent'; // 'recent' | 'price_low' | 'price_high'
+  final _counterCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 2, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tab.dispose();
+    _counterCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final offersQuery = FirebaseFirestore.instance
-        .collection('tasks')
-        .doc(task.id)
-        .collection('offers')
-        .orderBy('timestamp', descending: true);
+    final isScopedToTask = widget.taskId != null;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Offers Received'),
-        elevation: 1,
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Offers for your task:',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey[700]),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  task.title,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
+        title: Text(isScopedToTask ? 'Offers for Task' : 'Offers'),
+        centerTitle: true,
+        bottom: TabBar(
+          controller: _tab,
+          tabs: const [
+            Tab(text: 'Incoming'), // for posters: offers to your tasks; for helpers: offers you received (rare)
+            Tab(text: 'Sent'),     // for helpers: offers you sent; for posters: counters you sent
+          ],
+        ),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: 'Sort',
+            onSelected: (v) => setState(() => _sort = v),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'recent', child: Text('Recent')),
+              PopupMenuItem(value: 'price_low', child: Text('Price · Low → High')),
+              PopupMenuItem(value: 'price_high', child: Text('Price · High → Low')),
+            ],
+            icon: const Icon(Icons.sort),
           ),
-          const Divider(height: 1, thickness: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: offersQuery.snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return const Center(child: Text('An error occurred loading offers.'));
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Center(
-                    child: _buildEmptyState(
-                      icon: Icons.local_offer_outlined,
-                      title: 'No Offers Yet',
-                      message: 'You have not received any offers for this task.',
-                    ),
-                  );
-                }
-
-                final offers = snapshot.data!.docs.map((doc) => Offer.fromFirestore(doc)).toList();
-
-                return ListView.builder(
-                  padding: const EdgeInsets.all(8),
-                  itemCount: offers.length,
-                  itemBuilder: (context, index) {
-                    final offer = offers[index];
-                    return OfferCard(
-                      offer: offer,
-                      task: task,
-                      currentUser: currentUser,
-                    );
-                  },
-                );
-              },
-            ),
+        ],
+      ),
+      body: TabBarView(
+        controller: _tab,
+        children: [
+          _OffersTab(
+            scopeTaskId: widget.taskId,
+            incoming: true,
+            sort: _sort,
+            onAccept: _handleAccept,
+            onDecline: _handleDecline,
+            onCounter: _handleCounter,
+            onContact: _handleContactFeeGated,
+          ),
+          _OffersTab(
+            scopeTaskId: widget.taskId,
+            incoming: false,
+            sort: _sort,
+            onAccept: _handleAccept,
+            onDecline: _handleDecline,
+            onCounter: _handleCounter,
+            onContact: _handleContactFeeGated,
           ),
         ],
       ),
     );
+  }
+
+  // ---------------- Poster Actions ----------------
+
+  Future<void> _handleAccept(OfferDoc offer) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    // Confirm
+    final ok = await _confirm(context, title: 'Accept offer', message: 'Accept this offer and assign the task?');
+    if (ok != true) return;
+
+    try {
+      // Transaction to mark offer accepted and task assigned.
+      await FirebaseFirestore.instance.runTransaction((trx) async {
+        final taskRef = FirebaseFirestore.instance.collection('tasks').doc(offer.taskId);
+        final offerRef = FirebaseFirestore.instance.collection('offers').doc(offer.id);
+
+        final taskSnap = await trx.get(taskRef);
+        if (!taskSnap.exists) throw Exception('Task not found');
+        final task = taskSnap.data() as Map<String, dynamic>;
+
+        // Only poster can accept for their task
+        if (task['posterId'] != uid) throw Exception('Not authorized');
+
+        // Update offer + task
+        trx.update(offerRef, {'status': 'accepted', 'updatedAt': FieldValue.serverTimestamp()});
+        trx.update(taskRef, {
+          'status': 'assigned',
+          'helperId': offer.helperId,
+          'price': offer.price ?? task['price'],
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        // Optional: decline other pending offers for this task
+        final others = await FirebaseFirestore.instance
+            .collection('offers')
+            .where('taskId', isEqualTo: offer.taskId)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        for (final o in others.docs) {
+          if (o.id == offer.id) continue;
+          trx.update(o.reference, {'status': 'declined', 'updatedAt': FieldValue.serverTimestamp()});
+        }
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer accepted and task assigned.')));
+        Navigator.push(context, MaterialPageRoute(builder: (_) => TaskDetailsScreen(taskId: offer.taskId)));
+      }
+    } catch (e) {
+      _err(context, 'Could not accept offer: $e');
+    }
+  }
+
+  Future<void> _handleDecline(OfferDoc offer) async {
+    final ok = await _confirm(context, title: 'Decline offer', message: 'Decline this offer?');
+    if (ok != true) return;
+    try {
+      await FirebaseFirestore.instance.collection('offers').doc(offer.id).update({
+        'status': 'declined',
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _ok(context, 'Offer declined.');
+    } catch (e) {
+      _err(context, 'Could not decline: $e');
+    }
+  }
+
+  Future<void> _handleCounter(OfferDoc offer) async {
+    final txt = await _promptCounter(context, initial: offer.price?.toString() ?? '');
+    if (txt == null) return;
+
+    final newPrice = num.tryParse(txt);
+    if (newPrice == null) {
+      _err(context, 'Invalid price');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('offers').doc(offer.id).update({
+        'status': 'counter',
+        'counterPrice': newPrice,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _ok(context, 'Counter sent.');
+    } catch (e) {
+      _err(context, 'Could not send counter: $e');
+    }
+  }
+
+  // ---------------- Direct Contact (Fee-Gated) ----------------
+
+  Future<void> _handleContactFeeGated(OfferDoc offer) async {
+    try {
+      final fn = FirebaseFunctions.instance.httpsCallable('chargeDirectContactFee');
+      final res = await fn.call(<String, dynamic>{
+        'posterId': offer.posterId,
+        'helperId': offer.helperId,
+        'taskId': offer.taskId,
+        // server decides fee %, checks previous contact/previous tasks,
+        // charges if needed, and returns chat channel id.
+      });
+      final data = res.data as Map;
+      if (data['ok'] == true && data['channelId'] is String) {
+        _openChat(context, data['channelId'] as String);
+        return;
+      }
+      _err(context, data['message']?.toString() ?? 'Payment check failed');
+    } catch (e) {
+      // Fallback: if your backend isn’t ready, route to chat list with a warning
+      _warn(context, 'Contact fee backend not configured. Opening chat list.');
+      if (mounted) {
+        Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatListScreen()));
+      }
+    }
+  }
+
+  void _openChat(BuildContext context, String channelId) {
+    try {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => ConversationScreen(channelId: channelId)));
+    } catch (_) {
+      // If ConversationScreen signature differs, fall back
+      Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatListScreen()));
+    }
   }
 }
 
-class OfferCard extends StatelessWidget {
-  final Offer offer;
-  final Task task;
-  final HelpifyUser currentUser;
-  final FirestoreService _firestoreService = FirestoreService();
+// ===================== TAB =====================
 
-  OfferCard({
-    Key? key,
-    required this.offer,
-    required this.task,
-    required this.currentUser,
-  }) : super(key: key);
+class _OffersTab extends StatelessWidget {
+  const _OffersTab({
+    required this.scopeTaskId,
+    required this.incoming,
+    required this.sort,
+    required this.onAccept,
+    required this.onDecline,
+    required this.onCounter,
+    required this.onContact,
+  });
 
-  // --- UPDATED to call the new Cloud Function service ---
-  void _acceptOffer(BuildContext context) async {
-    if (task.status != 'open' && task.status != 'negotiating') {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This task is no longer open for offers.')));
-      return;
-    }
-
-    try {
-      bool? confirm = await showDialog<bool>(
-        context: context,
-        builder: (BuildContext ctx) => AlertDialog(
-          title: const Text('Confirm Acceptance'),
-          content: Text('Are you sure you want to accept this offer from ${offer.helperName} for LKR ${NumberFormat("#,##0").format(offer.amount)}?'),
-          actions: <Widget>[
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-            ElevatedButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Accept Offer')),
-          ],
-        ),
-      );
-
-      if (confirm != true) return;
-
-      // Call the new secure function
-      await _firestoreService.acceptOffer(task.id, offer.id);
-
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Offer from ${offer.helperName} accepted!'), backgroundColor: Colors.green));
-      _startChat(context);
-
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to accept: ${e.toString()}'), backgroundColor: Colors.red));
-    }
-  }
-
-  // (The rest of the OfferCard widget is unchanged)
-  Future<void> _startChat(BuildContext context) async {
-    final otherUserId = offer.helperId;
-    final currentUserId = currentUser.id;
-    final List<String> ids = [currentUserId, otherUserId];
-    ids.sort();
-
-    final chatChannelId = ids.join('_${task.id}');
-    final chatChannelDoc = FirebaseFirestore.instance.collection('chats').doc(chatChannelId);
-
-    await chatChannelDoc.set({
-      'taskId': task.id,
-      'taskTitle': task.title,
-      'participantIds': [currentUserId, otherUserId],
-      'participantNames': {
-        currentUserId: currentUser.displayName ?? 'Me',
-        otherUserId: offer.helperName,
-      },
-      'participantAvatars': {
-        currentUserId: currentUser.photoURL,
-        otherUserId: offer.helperAvatarUrl,
-      },
-    }, SetOptions(merge: true));
-
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (ctx) => ConversationScreen(
-        chatChannelId: chatChannelId,
-        otherUserName: offer.helperName,
-        otherUserAvatarUrl: offer.helperAvatarUrl,
-        taskTitle: task.title,
-      ),
-    ));
-  }
-
-  void _requestNumber(BuildContext context) {
-    FirebaseFirestore.instance
-        .collection('tasks').doc(task.id).collection('offers').doc(offer.id)
-        .update({'numberExchangeStatus': 'requested'});
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Phone number request sent!')));
-  }
-
-  void _showCallOptions(BuildContext context) async {
-    String? helperPhoneNumber;
-    try {
-      DocumentSnapshot userDoc = await FirebaseFirestore.instance.collection('users').doc(offer.helperId).get();
-      if (userDoc.exists && userDoc.data() != null) {
-        helperPhoneNumber = (userDoc.data() as Map<String, dynamic>)['phoneNumber'] as String?;
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error fetching helper\'s phone number.')));
-      return;
-    }
-    if (helperPhoneNumber == null || helperPhoneNumber.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Helper phone number is not available.')));
-      return;
-    }
-    String formattedPhoneNumber = helperPhoneNumber.startsWith('+') ? helperPhoneNumber : '+94$helperPhoneNumber';
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (ctx) => Wrap(
-        children: <Widget>[
-          ListTile(
-            leading: const Icon(Icons.call),
-            title: const Text('Call (Direct)'),
-            onTap: () async {
-              Navigator.of(ctx).pop();
-              final url = Uri.parse('tel:$formattedPhoneNumber');
-              if (await canLaunchUrl(url)) await launchUrl(url);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.message),
-            title: const Text('Call (WhatsApp)'),
-            onTap: () async {
-              Navigator.of(ctx).pop();
-              final whatsappUrl = Uri.parse('https://wa.me/${formattedPhoneNumber.replaceAll(RegExp(r'[^0-9]'), '')}');
-              if (await canLaunchUrl(whatsappUrl)) await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _declineOffer(BuildContext context) async {
-    bool? confirm = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext ctx) => AlertDialog(
-        title: const Text('Decline Offer'),
-        content: Text('Are you sure you want to decline this offer from ${offer.helperName}?'),
-        actions: <Widget>[
-          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-          TextButton(style: TextButton.styleFrom(foregroundColor: Colors.red), onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Decline')),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    try {
-      await FirebaseFirestore.instance.collection('tasks').doc(task.id).collection('offers').doc(offer.id).update({'status': 'declined'});
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Offer declined.')));
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to decline offer: ${e.toString()}')));
-    }
-  }
-
-  void _viewHelperProfile(BuildContext context, String helperId) {
-    Navigator.push(context, MaterialPageRoute(builder: (context) => HelperPublicProfileScreen(helperId: helperId)));
-  }
+  final String? scopeTaskId;
+  final bool incoming; // true = offers "to me" (poster); false = offers I sent (helper)
+  final String sort;
+  final Future<void> Function(OfferDoc offer) onAccept;
+  final Future<void> Function(OfferDoc offer) onDecline;
+  final Future<void> Function(OfferDoc offer) onCounter;
+  final Future<void> Function(OfferDoc offer) onContact;
 
   @override
   Widget build(BuildContext context) {
-    final bool isTaskOpen = task.status == 'open' || task.status == 'negotiating';
-    final bool isThisOfferAccepted = task.assignedOfferId == offer.id;
-    final bool isOfferDeclined = offer.status == 'declined';
-    final String helperAvatarUrl = offer.helperAvatarUrl ?? '';
-    final int helperTrustScore = offer.helperTrustScore ?? 0;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const Center(child: Text('Please sign in.'));
+
+    // We try top-level 'offers' first; if your schema is subcollection, adapt q2 below.
+    Query q = FirebaseFirestore.instance.collection('offers');
+
+    if (scopeTaskId != null) {
+      q = q.where('taskId', isEqualTo: scopeTaskId);
+    }
+
+    // Role-aware filtering
+    if (incoming) {
+      // Incoming to poster’s tasks OR to me in general (if you support helper receives)
+      q = q.where('posterId', isEqualTo: uid);
+    } else {
+      // Sent by me (helper)
+      q = q.where('helperId', isEqualTo: uid);
+    }
+
+    // Sort
+    if (sort == 'recent') {
+      q = q.orderBy('createdAt', descending: true);
+    } else if (sort == 'price_low') {
+      q = q.orderBy('price', descending: false);
+    } else if (sort == 'price_high') {
+      q = q.orderBy('price', descending: true);
+    }
+
+    // Limit
+    q = q.limit(200);
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: q.snapshots(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const _LoadingList();
+        }
+
+        var docs = snap.data?.docs ?? <QueryDocumentSnapshot>[];
+
+        // If you store offers under /tasks/{id}/offers, try pulling those instead.
+        if (docs.isEmpty && scopeTaskId != null) {
+          return _TaskOffersSubcollection(
+            taskId: scopeTaskId!,
+            incoming: incoming,
+            sort: sort,
+            onAccept: onAccept,
+            onDecline: onDecline,
+            onCounter: onCounter,
+            onContact: onContact,
+          );
+        }
+
+        if (docs.isEmpty) return const _EmptyState();
+
+        final offers = docs.map((d) => OfferDoc.from(d.id, d.data() as Map<String, dynamic>)).toList();
+
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+          itemCount: offers.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (_, i) => _OfferCard(
+            offer: offers[i],
+            incoming: incoming,
+            onAccept: onAccept,
+            onDecline: onDecline,
+            onCounter: onCounter,
+            onContact: onContact,
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Fallback to a subcollection structure: tasks/{taskId}/offers
+class _TaskOffersSubcollection extends StatelessWidget {
+  const _TaskOffersSubcollection({
+    required this.taskId,
+    required this.incoming,
+    required this.sort,
+    required this.onAccept,
+    required this.onDecline,
+    required this.onCounter,
+    required this.onContact,
+  });
+
+  final String taskId;
+  final bool incoming;
+  final String sort;
+  final Future<void> Function(OfferDoc offer) onAccept;
+  final Future<void> Function(OfferDoc offer) onDecline;
+  final Future<void> Function(OfferDoc offer) onCounter;
+  final Future<void> Function(OfferDoc offer) onContact;
+
+  @override
+  Widget build(BuildContext context) {
+    Query q = FirebaseFirestore.instance.collection('tasks').doc(taskId).collection('offers');
+
+    if (sort == 'recent') {
+      q = q.orderBy('createdAt', descending: true);
+    } else if (sort == 'price_low') {
+      q = q.orderBy('price', descending: false);
+    } else if (sort == 'price_high') {
+      q = q.orderBy('price', descending: true);
+    }
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: q.limit(200).snapshots(),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) return const _LoadingList();
+        final docs = snap.data?.docs ?? [];
+        if (docs.isEmpty) return const _EmptyState();
+        final offers = docs.map((d) => OfferDoc.from(d.id, d.data() as Map<String, dynamic>, taskId: taskId)).toList();
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+          itemCount: offers.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (_, i) => _OfferCard(
+            offer: offers[i],
+            incoming: incoming,
+            onAccept: onAccept,
+            onDecline: onDecline,
+            onCounter: onCounter,
+            onContact: onContact,
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ===================== OFFER CARD =====================
+
+class _OfferCard extends StatelessWidget {
+  const _OfferCard({
+    required this.offer,
+    required this.incoming,
+    required this.onAccept,
+    required this.onDecline,
+    required this.onCounter,
+    required this.onContact,
+  });
+
+  final OfferDoc offer;
+  final bool incoming;
+  final Future<void> Function(OfferDoc offer) onAccept;
+  final Future<void> Function(OfferDoc offer) onDecline;
+  final Future<void> Function(OfferDoc offer) onCounter;
+  final Future<void> Function(OfferDoc offer) onContact;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
 
     return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       clipBehavior: Clip.antiAlias,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            InkWell(
-              onTap: () => _viewHelperProfile(context, offer.helperId),
+            // Top row: price + status chip
+            Row(
+              children: [
+                Text(
+                  offer.price != null ? 'LKR ${offer.price}' : 'No price',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(width: 8),
+                _StatusChip(offer.status),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Open task',
+                  icon: const Icon(Icons.open_in_new),
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => TaskDetailsScreen(taskId: offer.taskId)));
+                  },
+                ),
+              ],
+            ),
+            if ((offer.message ?? '').isNotEmpty) ...[
+              const SizedBox(height: 4),
+              Text(offer.message!, style: TextStyle(color: cs.onSurfaceVariant)),
+            ],
+            const SizedBox(height: 8),
+
+            // Actions (role-aware)
+            Row(
+              children: [
+                if (incoming) ...[
+                  FilledButton.icon(
+                    onPressed: () => onAccept(offer),
+                    icon: const Icon(Icons.check_circle_outline),
+                    label: const Text('Accept'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => onDecline(offer),
+                    icon: const Icon(Icons.close),
+                    label: const Text('Decline'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => onCounter(offer),
+                    icon: const Icon(Icons.swap_vert),
+                    label: const Text('Counter'),
+                  ),
+                ] else ...[
+                  OutlinedButton.icon(
+                    onPressed: offer.status == 'pending'
+                        ? () => _editOffer(context, offer)
+                        : null,
+                    icon: const Icon(Icons.edit_outlined),
+                    label: const Text('Edit'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: offer.status == 'pending'
+                        ? () => _withdrawOffer(context, offer)
+                        : null,
+                    icon: const Icon(Icons.undo),
+                    label: const Text('Withdraw'),
+                  ),
+                ],
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => onContact(offer),
+                  icon: const Icon(Icons.chat_bubble_outline),
+                  label: const Text('Contact'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editOffer(BuildContext context, OfferDoc offer) async {
+    final ctrl = TextEditingController(text: offer.price?.toString() ?? '');
+    final newText = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Edit offer price'),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(hintText: 'Enter new price (LKR)'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, ctrl.text), child: const Text('Save')),
+        ],
+      ),
+    );
+    if (newText == null) return;
+
+    final newPrice = num.tryParse(newText);
+    if (newPrice == null) {
+      _err(context, 'Invalid price');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('offers').doc(offer.id).update({
+        'price': newPrice,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _ok(context, 'Offer updated.');
+    } catch (e) {
+      _err(context, 'Could not update: $e');
+    }
+  }
+
+  Future<void> _withdrawOffer(BuildContext context, OfferDoc offer) async {
+    final ok = await _confirm(context, title: 'Withdraw offer', message: 'Withdraw this offer?');
+    if (ok != true) return;
+    try {
+      await FirebaseFirestore.instance.collection('offers').doc(offer.id).update({
+        'status': 'withdrawn',
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      _ok(context, 'Offer withdrawn.');
+    } catch (e) {
+      _err(context, 'Could not withdraw: $e');
+    }
+  }
+}
+
+// ===================== MODELS & WIDGET HELPERS =====================
+
+class OfferDoc {
+  final String id;
+  final String taskId;
+  final String posterId;
+  final String helperId;
+  final num? price;
+  final String? message;
+  final String status; // 'pending'|'accepted'|'declined'|'withdrawn'|'counter'
+  final DateTime? createdAt;
+
+  OfferDoc({
+    required this.id,
+    required this.taskId,
+    required this.posterId,
+    required this.helperId,
+    required this.price,
+    required this.message,
+    required this.status,
+    required this.createdAt,
+  });
+
+  factory OfferDoc.from(String id, Map<String, dynamic> m, {String? taskId}) {
+    return OfferDoc(
+      id: id,
+      taskId: taskId ?? (m['taskId'] as String? ?? ''),
+      posterId: m['posterId'] as String? ?? '',
+      helperId: m['helperId'] as String? ?? '',
+      price: (m['price'] as num?),
+      message: m['message'] as String?,
+      status: m['status'] as String? ?? 'pending',
+      createdAt: _asDate(m['createdAt']),
+    );
+  }
+}
+
+DateTime? _asDate(dynamic ts) {
+  if (ts == null) return null;
+  if (ts is Timestamp) return ts.toDate();
+  if (ts is DateTime) return ts;
+  return null;
+}
+
+class _StatusChip extends StatelessWidget {
+  const _StatusChip(this.status);
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, tone) = _statusTone(status);
+    return Chip(
+      label: Text(label),
+      visualDensity: VisualDensity.compact,
+      side: BorderSide(color: tone.withOpacity(0.25)),
+      backgroundColor: tone.withOpacity(0.10),
+    );
+  }
+
+  (String, Color) _statusTone(String s) {
+    switch (s) {
+      case 'pending':
+        return ('Pending', Colors.blue);
+      case 'accepted':
+        return ('Accepted', Colors.green);
+      case 'declined':
+        return ('Declined', Colors.red);
+      case 'withdrawn':
+        return ('Withdrawn', Colors.grey);
+      case 'counter':
+        return ('Counter', Colors.amber);
+      default:
+        return (s, Colors.blueGrey);
+    }
+  }
+}
+
+class _LoadingList extends StatelessWidget {
+  const _LoadingList();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+      itemCount: 6,
+      itemBuilder: (_, i) {
+        return Card(
+          child: ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.person)),
+            title: Container(height: 12, width: 120, color: Colors.black12),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 8),
               child: Row(
                 children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: Colors.grey[200],
-                    backgroundImage: helperAvatarUrl.isNotEmpty ? NetworkImage(helperAvatarUrl) : null,
-                    child: helperAvatarUrl.isEmpty ? const Icon(Icons.person_outline, size: 24) : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(offer.helperName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                        if (helperTrustScore > 0) ...[
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(Icons.shield_outlined, color: Theme.of(context).primaryColor, size: 16),
-                              const SizedBox(width: 4),
-                              Text('Trust Score: $helperTrustScore', style: TextStyle(color: Theme.of(context).primaryColor, fontWeight: FontWeight.bold, fontSize: 12)),
-                            ],
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  Text('LKR ${NumberFormat("#,##0").format(offer.amount)}', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Theme.of(context).colorScheme.secondary)),
+                  Container(height: 10, width: 60, color: Colors.black12),
+                  const SizedBox(width: 8),
+                  Container(height: 10, width: 80, color: Colors.black12),
                 ],
               ),
             ),
-            if (offer.message.isNotEmpty) ...[
-              const Divider(height: 24, thickness: 0.5),
-              Container(
-                padding: const EdgeInsets.all(12),
-                width: double.infinity,
-                decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey.shade300, width: 0.5)),
-                child: Text('"${offer.message}"', style: TextStyle(fontSize: 15, color: Colors.grey[800], fontStyle: FontStyle.italic)),
-              ),
-            ],
-            const SizedBox(height: 16),
-            Wrap(
-              alignment: WrapAlignment.end,
-              spacing: 8.0,
-              runSpacing: 8.0,
-              children: [
-                if (isThisOfferAccepted)
-                  const Chip(label: Text('Accepted'), backgroundColor: Colors.green, avatar: Icon(Icons.check_circle, color: Colors.white))
-                else if (isOfferDeclined)
-                  const Chip(label: Text('Declined'), backgroundColor: Colors.redAccent, avatar: Icon(Icons.cancel, color: Colors.white))
-                else if(isTaskOpen) ...[
-                    OutlinedButton(onPressed: () => _declineOffer(context), child: const Text('Decline'), style: OutlinedButton.styleFrom(foregroundColor: Colors.red, side: const BorderSide(color: Colors.red))),
-                    ElevatedButton(onPressed: () => _acceptOffer(context), child: const Text('Accept')),
-                  ] else
-                    Chip(label: Text('Task ${task.status}'), backgroundColor: Colors.grey.withOpacity(0.2)),
-                OutlinedButton.icon(icon: const Icon(Icons.chat_bubble_outline, size: 18), label: const Text('Chat'), onPressed: () => _startChat(context)),
-                if (offer.numberExchangeStatus == 'accepted')
-                  OutlinedButton.icon(icon: const Icon(Icons.call_outlined, size: 18, color: Colors.green), label: const Text('View No.'), onPressed: () => _showCallOptions(context))
-                else if (offer.numberExchangeStatus == 'requested')
-                  const Chip(label: Text('Requested...'))
-                else if(isThisOfferAccepted || isTaskOpen)
-                    OutlinedButton.icon(icon: const Icon(Icons.phone_in_talk_outlined, size: 18), label: const Text('Request No.'), onPressed: () => _requestNumber(context)),
-              ],
-            )
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.inbox_outlined, size: 44, color: cs.outline),
+            const SizedBox(height: 10),
+            const Text('No offers here yet.'),
+            const SizedBox(height: 4),
+            const Text('Try switching tabs or broadening your filters.'),
           ],
         ),
       ),
@@ -343,20 +683,49 @@ class OfferCard extends StatelessWidget {
   }
 }
 
-Widget _buildEmptyState({required IconData icon, required String title, required String message}) {
-  return Center(
-    child: Padding(
-      padding: const EdgeInsets.all(32.0),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(title, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(message, textAlign: TextAlign.center, style: TextStyle(color: Colors.grey[600], fontSize: 16)),
-        ],
-      ),
+// ---------------- Dialog helpers ----------------
+
+Future<bool?> _confirm(BuildContext context, {required String title, required String message}) {
+  return showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: Text(title),
+      content: Text(message),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Yes')),
+      ],
     ),
   );
+}
+
+Future<String?> _promptCounter(BuildContext context, {String? initial}) {
+  final ctrl = TextEditingController(text: initial ?? '');
+  return showDialog<String>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Counter price'),
+      content: TextField(
+        controller: ctrl,
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(hintText: 'Enter counter price (LKR)'),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, ctrl.text), child: const Text('Send')),
+      ],
+    ),
+  );
+}
+
+void _ok(BuildContext context, String msg) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+}
+
+void _err(BuildContext context, String msg) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
+}
+
+void _warn(BuildContext context, String msg) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.orange));
 }

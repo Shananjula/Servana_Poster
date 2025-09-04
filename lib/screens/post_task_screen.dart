@@ -1,23 +1,34 @@
+// lib/screens/post_task_screen.dart
+
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/material.dart';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:servana/models/user_model.dart';
-import 'package:servana/services/ai_service.dart';
-import 'package:servana/services/firestore_service.dart'; // Import the service
-import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'map_picker_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
-enum TaskType { physical, online }
-enum PaymentMethod { cash, card, servCoins }
+// Your existing categories source (keys → subcats)
+import 'package:servana/constants/service_categories.dart' as cats;
+import 'package:servana/screens/map_picker_screen.dart';
+// Alias to avoid any naming collisions with other AppServices
+import 'package:servana/services/ai_service.dart' as ai;
+
+// Post a Task (Poster)
+// - Keeps a simple, robust form: title, description, category/subcategory,
+//   task type (Online / Physical), budget (min/max OR one number), optional tags,
+//   optional cover image, and optional map location for Physical tasks.
+// - NEW: “✨ Generate for me” button uses AiService.draftTaskFromText(...) to
+//   draft a better title, pick a category, tags and a fair price range.
+// - Price hint: shows “Similar jobs nearby are LKR X–Y” (heuristic if AI is
+//   unavailable).
+// - Writes a doc to /tasks with status 'open' and posterId; other fields are
+//   schema-tolerant and null-safe. No Firestore rules changes.
 
 class PostTaskScreen extends StatefulWidget {
-  const PostTaskScreen({Key? key}) : super(key: key);
+  const PostTaskScreen({super.key, this.initialCategory});
+  final String? initialCategory;
 
   @override
   State<PostTaskScreen> createState() => _PostTaskScreenState();
@@ -25,544 +36,653 @@ class PostTaskScreen extends StatefulWidget {
 
 class _PostTaskScreenState extends State<PostTaskScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _titleController = TextEditingController();
-  final _descriptionController = TextEditingController();
-  final _budgetController = TextEditingController();
 
-  // Add a reference to your service
-  final FirestoreService _firestoreService = FirestoreService();
+  // Controllers
+  final _titleCtrl = TextEditingController();
+  final _descCtrl = TextEditingController();
+  final _budgetMinCtrl = TextEditingController();
+  final _budgetMaxCtrl = TextEditingController();
+  final _budgetSingleCtrl = TextEditingController();
+  final _tagsCtrl = TextEditingController();
 
-  // State variables remain the same
-  bool _isGeneratingSuggestions = false;
-  String? _suggestedBudget;
-  Timer? _debounce;
-  TaskType _selectedTaskType = TaskType.physical;
-  PaymentMethod _selectedPaymentMethod = PaymentMethod.card;
-  String? _selectedCategory;
-  String? _selectedSubCategory;
-  XFile? _imageFile;
-  String? _imageUrl;
-  GeoPoint? _selectedLocation;
-  String _locationAddress = 'No location selected';
-  bool _isSubmitting = false;
-  bool _isFetchingLocation = false;
-  bool _isUploadingImage = false;
-  final Map<String, List<String>> _categories = {
-    'Home & Garden': ['Plumbing', 'Handyman', 'Gardening', 'Cleaning', 'Moving', 'Appliance Repair'],
-    'Digital & Online': ['Graphic & Design', 'Writing & Translation', 'Digital Marketing', 'Tech & Programming', 'Data Entry'],
-    'Education': ['Math Tutoring', 'Science Tutoring', 'Language Lessons', 'Music Lessons'],
-    'Other': ['Delivery', 'Events & Photography', 'Vehicle Repair', 'Other'],
-  };
-  List<String> _subCategories = [];
+  // Category / Subcategory
+  String? _categoryLabel; // e.g., "Cleaning"
+  String? _subcategory;
+
+  // Task type
+  String _type = 'physical'; // 'physical' | 'online'
+
+  // Location (only for physical)
+  double? _lat;
+  double? _lng;
+  String? _address;
+
+  // Optional image
+  File? _coverFile;
+  bool _uploadingImage = false;
+
+  // Submit state
+  bool _submitting = false;
+
+  // Price hint
+  String? _priceHint; // "Similar jobs nearby are LKR X–Y"
 
   @override
   void initState() {
     super.initState();
-    _titleController.addListener(() {
-      if (_debounce?.isActive ?? false) _debounce!.cancel();
-      _debounce = Timer(const Duration(milliseconds: 1000), () {
-        if (_titleController.text.trim().length > 10) {
-          _getAiSuggestions();
-        }
-      });
-    });
+    // Set the initial category if one was provided to the widget.
+    if (widget.initialCategory != null) {
+      _categoryLabel = widget.initialCategory;
+    }
   }
 
   @override
   void dispose() {
-    _titleController.dispose();
-    _descriptionController.dispose();
-    _budgetController.dispose();
-    _debounce?.cancel();
+    _titleCtrl.dispose();
+    _descCtrl.dispose();
+    _budgetMinCtrl.dispose();
+    _budgetMaxCtrl.dispose();
+    _budgetSingleCtrl.dispose();
+    _tagsCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _getAiSuggestions() async {
-    setState(() => _isGeneratingSuggestions = true);
-    final suggestions = await AiService.getTaskSuggestionsFromTitle(_titleController.text.trim());
-    if (suggestions != null && mounted) {
-      setState(() {
-        if(_descriptionController.text.trim().isEmpty) {
-          _descriptionController.text = suggestions['description'] ?? '';
-        }
-        final suggestedCategory = suggestions['category'];
-        if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
-          _selectedCategory = suggestedCategory;
-          _subCategories = _categories[suggestedCategory] ?? [];
-          _selectedSubCategory = null;
-        }
-        final budget = suggestions['budget'];
-        if(budget != null) {
-          _suggestedBudget = budget.toString();
-        }
-      });
-    }
-    setState(() => _isGeneratingSuggestions = false);
-  }
+  // ---------------------------
+  // UI
+  // ---------------------------
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
-  Future<void> _generateTaskFromImage() async {
-    if (_imageFile == null) return;
-    setState(() => _isGeneratingSuggestions = true);
-    final imageData = await _imageFile!.readAsBytes();
-    final suggestions = await AiService.generateTaskFromImage(_titleController.text.trim(), imageData);
-    if(suggestions != null && mounted) {
-      setState(() {
-        _titleController.text = suggestions['title'] ?? _titleController.text;
-        _descriptionController.text = suggestions['description'] ?? _descriptionController.text;
-        final suggestedCategory = suggestions['category'];
-        if (suggestedCategory != null && _categories.containsKey(suggestedCategory)) {
-          _selectedCategory = suggestedCategory;
-          _subCategories = _categories[suggestedCategory] ?? [];
-          _selectedSubCategory = null;
-        }
-        final budget = suggestions['budget'];
-        if (budget != null) {
-          _suggestedBudget = budget;
-          _budgetController.text = budget;
-        }
-      });
-    }
-    setState(() => _isGeneratingSuggestions = false);
-  }
+    final categories = cats.AppServices.categories.keys.toList(growable: false);
+    final subcats = _categoryLabel == null
+        ? const <String>[]
+        : (cats.AppServices.categories[_categoryLabel!] ?? const <String>[]);
 
-  // --- THIS FUNCTION IS NOW SIMPLIFIED ---
-  Future<void> _submitTask() async {
-    if (!_formKey.currentState!.validate()) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please fill all required fields.')));
-      return;
-    }
-    if (_selectedTaskType == TaskType.physical && _selectedLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a location for a physical task.')));
-      return;
-    }
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Post a task'),
+      ),
+      body: SafeArea(
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+            children: [
+              // Title + Generate for me
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _titleCtrl,
+                      textInputAction: TextInputAction.next,
+                      decoration: const InputDecoration(
+                        labelText: 'Title',
+                        hintText: 'E.g., Deep cleaning for 2-bedroom apartment',
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) {
+                        if (v == null || v.trim().length < 8) {
+                          return 'Please enter at least 8 characters';
+                        }
+                        return null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Generate title, category, tags and price hint',
+                    child: FilledButton.icon(
+                      onPressed: _onGeneratePressed,
+                      icon: const Text('✨'),
+                      label: const Text('Generate'),
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+              TextFormField(
+                controller: _descCtrl,
+                maxLines: 5,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText:
+                  'Tell helpers exactly what you need. Include size/scope, date/time, photos, and special notes.',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().length < 20) {
+                    return 'Please enter at least 20 characters';
+                  }
+                  return null;
+                },
+              ),
 
-    setState(() => _isSubmitting = true);
+              const SizedBox(height: 16),
 
-    try {
-      // First, check the user's balance to avoid unnecessary uploads
-      const double postingFee = 10.0;
-      final userDoc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      final userData = HelpifyUser.fromFirestore(userDoc);
+              // Category + Subcategory
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _categoryLabel,
+                      items: categories
+                          .map((label) => DropdownMenuItem(
+                        value: label,
+                        child: Row(
+                          children: [
+                            Icon(_iconForCategory(label), color: cs.primary),
+                            const SizedBox(width: 8),
+                            Text(label),
+                          ],
+                        ),
+                      ))
+                          .toList(),
+                      onChanged: (v) => setState(() {
+                        _categoryLabel = v;
+                        _subcategory = null;
+                      }),
+                      decoration: const InputDecoration(
+                        labelText: 'Category',
+                        border: OutlineInputBorder(),
+                      ),
+                      validator: (v) => v == null ? 'Select a category' : null,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _subcategory,
+                      items: subcats
+                          .map((label) => DropdownMenuItem(
+                        value: label,
+                        child: Text(label),
+                      ))
+                          .toList(),
+                      onChanged: (v) => setState(() => _subcategory = v),
+                      decoration: const InputDecoration(
+                        labelText: 'Subcategory (optional)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
 
-      if (userData.servCoinBalance < 100) {
-        throw Exception('You need at least 100 Serv Coins to post a task.');
-      }
-      if (userData.servCoinBalance < postingFee) {
-        throw Exception('Insufficient Serv Coins. You need $postingFee coins to post.');
-      }
+              const SizedBox(height: 16),
 
-      // Upload image if it exists
-      if (_imageFile != null) {
-        setState(() => _isUploadingImage = true);
-        final fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
-        final ref = FirebaseStorage.instance.ref().child('task_images').child(user.uid).child(fileName);
-        await ref.putFile(File(_imageFile!.path));
-        _imageUrl = await ref.getDownloadURL();
-        setState(() => _isUploadingImage = false);
-      }
+              // Type
+              Text('Task type', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'physical', label: Text('Physical'), icon: Icon(Icons.location_on_rounded)),
+                  ButtonSegment(value: 'online', label: Text('Online'), icon: Icon(Icons.public_rounded)),
+                ],
+                selected: {_type},
+                onSelectionChanged: (s) => setState(() => _type = s.first),
+              ),
 
-      final budget = double.tryParse(_budgetController.text) ?? 0.0;
+              const SizedBox(height: 16),
 
-      // Prepare the data map
-      final taskData = {
-        'taskType': _selectedTaskType.name,
-        'title': _titleController.text.trim(),
-        'description': _descriptionController.text.trim(),
-        'category': _selectedCategory,
-        'subCategory': _selectedSubCategory,
-        'location': _selectedTaskType == TaskType.physical ? _selectedLocation : null,
-        'locationAddress': _selectedTaskType == TaskType.physical ? _locationAddress : null,
-        'budget': budget,
-        'imageUrl': _imageUrl,
-        'paymentMethod': _selectedPaymentMethod.name,
-        'posterId': user.uid,
-        'posterName': user.displayName ?? 'Helpify User',
-        'posterAvatarUrl': user.photoURL ?? '',
-        'status': 'open',
-        'timestamp': FieldValue.serverTimestamp(),
-        'participantIds': [user.uid],
-      };
+              // Budget
+              Text('Budget', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _budgetSingleCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Budget (LKR)',
+                        hintText: 'e.g., 5000',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('or', style: theme.textTheme.bodyMedium),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _budgetMinCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Min (LKR)',
+                        hintText: 'e.g., 4000',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _budgetMaxCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Max (LKR)',
+                        hintText: 'e.g., 6000',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              if (_priceHint != null) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    const Icon(Icons.lightbulb_rounded, size: 16),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        _priceHint!,
+                        style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
 
-      // Call the centralized service function
-      await _firestoreService.postNewTask(
-        taskData: taskData,
-        postingFee: postingFee,
-      );
+              const SizedBox(height: 16),
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Task posted successfully! $postingFee coins deducted.'), backgroundColor: Colors.green),
-        );
-        Navigator.of(context).pop();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: ${e.toString()}'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
+              // Tags
+              TextFormField(
+                controller: _tagsCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Tags (comma-separated, optional)',
+                  hintText: 'e.g., apartment, 2bhk, same-day',
+                  border: OutlineInputBorder(),
+                ),
+              ),
 
-  // Location functions and build method remain the same...
-  Future<void> _getCurrentLocation() async {
-    setState(() => _isFetchingLocation = true);
-    try {
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) throw Exception('Location services are disabled.');
+              const SizedBox(height: 16),
 
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) throw Exception('Location permissions are denied');
-      }
-      if (permission == LocationPermission.deniedForever) throw Exception('Location permissions are permanently denied.');
+              // Location picker (physical only)
+              if (_type == 'physical') _LocationCard(lat: _lat, lng: _lng, address: _address, onPick: _pickLocation),
 
-      final position = await Geolocator.getCurrentPosition();
-      _updateLocation(LatLng(position.latitude, position.longitude));
+              const SizedBox(height: 16),
 
-    } catch(e) {
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
-    } finally {
-      if(mounted) setState(() => _isFetchingLocation = false);
-    }
-  }
+              // Image picker
+              _ImagePickerCard(
+                file: _coverFile,
+                uploading: _uploadingImage,
+                onPick: _pickImage,
+                onClear: () => setState(() => _coverFile = null),
+              ),
 
-  Future<void> _selectOnMap() async {
-    final pickedLocation = await Navigator.of(context).push<LatLng>(
-      MaterialPageRoute(builder: (ctx) => const MapPickerScreen()),
+              const SizedBox(height: 20),
+
+              // Submit
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: _submitting ? null : _onSubmit,
+                  child: _submitting
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Post task'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
-    if (pickedLocation == null) return;
-    _updateLocation(pickedLocation);
   }
 
-  Future<void> _updateLocation(LatLng location) async {
-    setState(() {
-      _selectedLocation = GeoPoint(location.latitude, location.longitude);
-      _locationAddress = "Fetching address...";
-    });
+  // ---------------------------
+  // Actions
+  // ---------------------------
+
+  Future<void> _onGeneratePressed() async {
+    final title = _titleCtrl.text.trim();
+    final desc = _descCtrl.text.trim();
+    if (title.isEmpty && desc.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Add a short title or description first')),
+      );
+      return;
+    }
+
     try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(location.latitude, location.longitude);
-      if (placemarks.isNotEmpty) {
-        final place = placemarks.first;
+      final draft = await ai.AiService.draftTaskFromText(title: title, description: desc);
+
+      // Apply title/category/tags
+      final newTitle = (draft['title'] as String?)?.trim();
+      final newCat = (draft['category'] as String?)?.trim();
+      final tags = (draft['tags'] as List?)?.whereType<String>().toList() ?? const <String>[];
+
+      if (newTitle != null && newTitle.length >= 8) _titleCtrl.text = newTitle;
+      if (newCat != null && newCat.isNotEmpty) {
+        // Match label if present in your catalog, else just set as free text label
+        final match = cats.AppServices.categories.keys.firstWhere(
+              (l) => l.toLowerCase() == newCat.toLowerCase(),
+          orElse: () => newCat,
+        );
         setState(() {
-          _locationAddress = "${place.name ?? ''}, ${place.subLocality ?? ''}, ${place.locality ?? ''}".replaceAll(RegExp(r'^, |, $'), '');
+          _categoryLabel = match;
+          _subcategory = null;
         });
       }
-    } catch (e) {
-      setState(() => _locationAddress = "Lat: ${location.latitude.toStringAsFixed(2)}, Lon: ${location.longitude.toStringAsFixed(2)}");
+      if (tags.isNotEmpty && _tagsCtrl.text.trim().isEmpty) {
+        _tagsCtrl.text = tags.toSet().join(', ');
+      }
+
+      // Price band
+      final band = draft['budgetRange'] is Map ? (draft['budgetRange'] as Map) : null;
+      if (band != null && band.containsKey('min') && band.containsKey('max')) {
+        final int min = (band['min'] as num).toInt();
+        final int max = (band['max'] as num).toInt();
+        setState(() {
+          _priceHint = 'Similar jobs nearby are LKR ${_fmtInt(min)}–${_fmtInt(max)}';
+          if (_budgetSingleCtrl.text.trim().isEmpty &&
+              _budgetMinCtrl.text.trim().isEmpty &&
+              _budgetMaxCtrl.text.trim().isEmpty) {
+            _budgetMinCtrl.text = min.toString();
+            _budgetMaxCtrl.text = max.toString();
+          }
+        });
+      } else {
+        _makeHeuristicHint();
+      }
+    } catch (_) {
+      _makeHeuristicHint();
     }
   }
+
+  Future<void> _makeHeuristicHint() async {
+    // Conservative defaults by category using AiService bands if possible
+    final band = ai.AiService.estimateBudgetBand(category: _categoryLabel);
+    final int min = band?.$1 ?? 1500;
+    final int max = band?.$2 ?? 6000;
+
+    setState(() {
+      _priceHint = 'Similar jobs nearby are LKR ${_fmtInt(min)}–${_fmtInt(max)}';
+    });
+  }
+
+  Future<void> _pickLocation() async {
+    final result = await Navigator.push<Map<String, dynamic>?>(
+      context,
+      MaterialPageRoute(builder: (_) => const MapPickerScreen()),
+    );
+    if (!mounted || result == null) return;
+    setState(() {
+      _lat = (result['lat'] as num?)?.toDouble();
+      _lng = (result['lng'] as num?)?.toDouble();
+      _address = (result['address'] as String?)?.trim();
+    });
+  }
+
+  Future<void> _pickImage() async {
+    try {
+      final picker = ImagePicker();
+      final x = await picker.pickImage(source: ImageSource.gallery, imageQuality: 80);
+      if (x == null) return;
+      setState(() => _coverFile = File(x.path));
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<void> _onSubmit() async {
+    if (_submitting) return;
+    if (!_formKey.currentState!.validate()) return;
+
+    // Basic budget validation
+    final single = _asNum(_budgetSingleCtrl.text);
+    final minB = _asNum(_budgetMinCtrl.text);
+    final maxB = _asNum(_budgetMaxCtrl.text);
+    if (single == null && minB == null && maxB == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Please enter a budget or a range')));
+      return;
+    }
+    if (minB != null && maxB != null && minB > maxB) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Min cannot be greater than Max')));
+      return;
+    }
+
+    if (_type == 'physical' && (_lat == null || _lng == null)) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Please pick a location for a physical task')));
+      return;
+    }
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('You must be signed in to post')));
+      return;
+    }
+
+    setState(() => _submitting = true);
+
+    try {
+      // Optional image upload
+      String? coverUrl;
+      if (_coverFile != null) {
+        setState(() => _uploadingImage = true);
+        final ref = FirebaseStorage.instance
+            .ref()
+            .child('task_covers')
+            .child('${uid}_${DateTime.now().millisecondsSinceEpoch}.jpg');
+        await ref.putFile(_coverFile!);
+        coverUrl = await ref.getDownloadURL();
+        setState(() => _uploadingImage = false);
+      }
+
+      // Compose task payload (schema tolerant)
+      final now = FieldValue.serverTimestamp();
+      final task = <String, dynamic>{
+        'title': _titleCtrl.text.trim(),
+        'description': _descCtrl.text.trim(),
+        'category': _categoryLabel,
+        'subcategory': _subcategory,
+        'type': _type, // 'online' | 'physical'
+        'status': 'open',
+        'posterId': uid,
+        'createdAt': now,
+        'tags': _parseTags(_tagsCtrl.text),
+        'isUrgent': false,
+        if (single != null) 'budget': single,
+        if (minB != null) 'budgetMin': minB,
+        if (maxB != null) 'budgetMax': maxB,
+        if (coverUrl != null) 'coverUrl': coverUrl,
+        if (_lat != null && _lng != null) 'location': GeoPoint(_lat!, _lng!),
+        if (_address != null) 'address': _address,
+      };
+
+      final doc = await FirebaseFirestore.instance.collection('tasks').add(task);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Task posted!')),
+      );
+      Navigator.pop(context, {'taskId': doc.id});
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Failed to post: $e')));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  // ---------------------------
+  // Helpers
+  // ---------------------------
+  List<String> _parseTags(String raw) {
+    return raw
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .toList();
+  }
+
+  num? _asNum(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v;
+    final s = v.toString().trim().replaceAll(',', '');
+    if (s.isEmpty) return null;
+    final n = num.tryParse(s);
+    return n;
+  }
+
+  // Icon mapping that doesn’t rely on any external helper
+  IconData _iconForCategory(String? label) {
+    final c = (label ?? '').toLowerCase();
+    if (c.contains('plumb')) return Icons.plumbing;
+    if (c.contains('electric')) return Icons.electrical_services;
+    if (c.contains('clean')) return Icons.cleaning_services;
+    if (c.contains('paint')) return Icons.format_paint;
+    if (c.contains('carp')) return Icons.chair_alt;
+    if (c.contains('garden') || c.contains('yard')) return Icons.yard;
+    if (c.contains('move') || c.contains('deliver')) return Icons.local_shipping;
+    if (c.contains('ac') || c.contains('air')) return Icons.ac_unit;
+    if (c.contains('repair') || c.contains('appliance')) return Icons.build;
+    if (c.contains('design') || c.contains('graphic')) return Icons.brush;
+    if (c.contains('computer') || c.contains('it')) return Icons.computer;
+    if (c.contains('tuition') || c.contains('teach') || c.contains('class')) return Icons.school;
+    return Icons.work_outline;
+  }
+
+  String _fmtInt(int n) {
+    final s = n.abs().toString();
+    final reg = RegExp(r'\B(?=(\d{3})+(?!\d))');
+    final withCommas = s.replaceAllMapped(reg, (m) => ',');
+    return n < 0 ? '−$withCommas' : withCommas;
+  }
+}
+
+// ---------------------------
+// Sub-widgets
+// ---------------------------
+
+class _LocationCard extends StatelessWidget {
+  const _LocationCard({
+    required this.lat,
+    required this.lng,
+    required this.address,
+    required this.onPick,
+  });
+
+  final double? lat;
+  final double? lng;
+  final String? address;
+  final VoidCallback onPick;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Post a New Task'),
-        actions: [
-          if(_isSubmitting)
-            const Padding(padding: EdgeInsets.all(16.0), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white)))
-          else
-            IconButton(icon: const Icon(Icons.check), onPressed: _submitTask, tooltip: 'Post Task')
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildSectionHeader('1. Choose Task Type'),
-              _buildTaskTypeSelector(),
-              const SizedBox(height: 24),
-              _buildSectionHeader('2. Describe your Task'),
-              TextFormField(
-                controller: _titleController,
-                decoration: InputDecoration(
-                  labelText: 'Task Title',
-                  suffixIcon: _isGeneratingSuggestions ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width:20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))) : null,
-                ),
-                validator: (value) => value!.isEmpty ? 'Please enter a title' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _descriptionController,
-                decoration: const InputDecoration(labelText: 'Description'),
-                maxLines: 5,
-                validator: (value) => value!.isEmpty ? 'Please enter a description' : null,
-              ),
-              if (_selectedTaskType == TaskType.physical) ...[
-                const SizedBox(height: 24),
-                _buildSectionHeader('3. Set Location'),
-                _buildLocationInput(),
-              ],
-              const SizedBox(height: 24),
-              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '4. Payment & Details' : '3. Payment & Details'),
-              _buildPaymentMethodSelector(),
-              const SizedBox(height: 16),
-              _buildCategorySelectors(),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _budgetController,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: 'Your Budget (LKR)'),
-                validator: (value) => value!.isEmpty ? 'Please enter a budget' : null,
-              ),
-              if (_suggestedBudget != null)
-                _buildBudgetSuggestion(),
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
-              const SizedBox(height: 24),
-              _buildSectionHeader(_selectedTaskType == TaskType.physical ? '5. Add a Photo (Optional)' : '4. Add a Photo (Optional)'),
-              _buildImagePicker(),
-            ],
+    return Material(
+      color: cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: cs.outline.withOpacity(0.12)),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        leading: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: cs.primary.withOpacity(0.12),
+            shape: BoxShape.circle,
           ),
+          child: const Icon(Icons.place_rounded),
+        ),
+        title: Text(
+          address?.isNotEmpty == true
+              ? address!
+              : (lat != null && lng != null)
+              ? 'Picked: ${lat!.toStringAsFixed(4)}, ${lng!.toStringAsFixed(4)}'
+              : 'Pick task location',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        subtitle: Text(
+          address?.isNotEmpty == true
+              ? 'Physical task at this address'
+              : 'Required for physical tasks',
+          style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+        ),
+        trailing: FilledButton.tonal(
+          onPressed: onPick,
+          child: const Text('Pick'),
         ),
       ),
     );
   }
+}
 
-  Widget _buildPaymentMethodSelector() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8.0),
-          child: Text("How will you pay?", style: Theme.of(context).textTheme.titleMedium),
-        ),
-        SegmentedButton<PaymentMethod>(
-          style: SegmentedButton.styleFrom(
-            foregroundColor: Theme.of(context).textTheme.bodyLarge?.color,
-            selectedForegroundColor: Theme.of(context).colorScheme.onPrimary,
-            selectedBackgroundColor: Theme.of(context).colorScheme.primary,
+class _ImagePickerCard extends StatelessWidget {
+  const _ImagePickerCard({
+    required this.file,
+    required this.uploading,
+    required this.onPick,
+    required this.onClear,
+  });
+
+  final File? file;
+  final bool uploading;
+  final VoidCallback onPick;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Material(
+      color: cs.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: cs.outline.withOpacity(0.12)),
+      ),
+      child: ListTile(
+        leading: Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: cs.primary.withOpacity(0.12),
+            shape: BoxShape.circle,
+            image: file != null
+                ? DecorationImage(image: FileImage(file!), fit: BoxFit.cover)
+                : null,
           ),
-          segments: const <ButtonSegment<PaymentMethod>>[
-            ButtonSegment<PaymentMethod>(value: PaymentMethod.card, label: Text('Card'), icon: Icon(Icons.credit_card)),
-            ButtonSegment<PaymentMethod>(value: PaymentMethod.cash, label: Text('Cash'), icon: Icon(Icons.money_outlined)),
-            ButtonSegment<PaymentMethod>(value: PaymentMethod.servCoins, label: Text('Serv Coins'), icon: Icon(Icons.monetization_on_outlined)),
-          ],
-          selected: <PaymentMethod>{_selectedPaymentMethod},
-          onSelectionChanged: (Set<PaymentMethod> newSelection) {
-            setState(() {
-              _selectedPaymentMethod = newSelection.first;
-            });
-          },
+          child: file == null ? const Icon(Icons.photo_library_rounded) : null,
         ),
-        const SizedBox(height: 16),
-      ],
-    );
-  }
-
-  Widget _buildSectionHeader(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0, top: 8.0),
-      child: Text(
-        title,
-        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-
-  Widget _buildTaskTypeSelector() {
-    return SegmentedButton<TaskType>(
-      style: SegmentedButton.styleFrom(
-        foregroundColor: Theme.of(context).textTheme.bodyLarge?.color,
-        selectedForegroundColor: Theme.of(context).colorScheme.onPrimary,
-        selectedBackgroundColor: Theme.of(context).colorScheme.primary,
-      ),
-      segments: const <ButtonSegment<TaskType>>[
-        ButtonSegment<TaskType>(
-          value: TaskType.physical,
-          label: Text('Physical'),
-          icon: Icon(Icons.location_on_outlined),
+        title: const Text('Cover image (optional)'),
+        subtitle: Text(
+          file == null ? 'Add a photo to attract more helpers' : 'Selected',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-        ButtonSegment<TaskType>(
-          value: TaskType.online,
-          label: Text('Online'),
-          icon: Icon(Icons.language),
-        ),
-      ],
-      selected: <TaskType>{_selectedTaskType},
-      onSelectionChanged: (Set<TaskType> newSelection) {
-        setState(() {
-          _selectedTaskType = newSelection.first;
-          _selectedCategory = null;
-          _selectedSubCategory = null;
-          _subCategories = [];
-        });
-      },
-    );
-  }
-
-  Widget _buildCategorySelectors() {
-    final relevantCategories = _selectedTaskType == TaskType.online
-        ? _categories.keys.where((k) => k == 'Digital & Online' || k == 'Education' || k == 'Other').toList()
-        : _categories.keys.where((k) => k != 'Digital & Online').toList();
-
-    if (_selectedCategory != null && !relevantCategories.contains(_selectedCategory)) {
-      _selectedCategory = null;
-      _selectedSubCategory = null;
-      _subCategories = [];
-    }
-
-    return Column(
-      children: [
-        DropdownButtonFormField<String>(
-          value: _selectedCategory,
-          decoration: const InputDecoration(labelText: 'Category'),
-          items: relevantCategories
-              .map((label) => DropdownMenuItem(child: Text(label), value: label))
-              .toList(),
-          onChanged: (value) {
-            setState(() {
-              _selectedCategory = value;
-              _selectedSubCategory = null;
-              _subCategories = _categories[value] ?? [];
-            });
-          },
-          validator: (value) => value == null ? 'Please select a category' : null,
-        ),
-        AnimatedSize(
-          duration: const Duration(milliseconds: 300),
-          child: _subCategories.isNotEmpty
-              ? Padding(
-            padding: const EdgeInsets.only(top: 16.0),
-            child: DropdownButtonFormField<String>(
-              value: _selectedSubCategory,
-              decoration: const InputDecoration(labelText: 'Sub-Category'),
-              items: _subCategories
-                  .map((label) => DropdownMenuItem(child: Text(label), value: label))
-                  .toList(),
-              onChanged: (value) => setState(() => _selectedSubCategory = value),
-              validator: (value) => value == null ? 'Please select a sub-category' : null,
-            ),
-          )
-              : const SizedBox.shrink(),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildImagePicker() {
-    return Center(
-      child: Column(
-        children: [
-          Container(
-            height: 150,
-            width: double.infinity,
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.grey.shade300),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: _isUploadingImage
-                ? const Center(child: CircularProgressIndicator())
-                : _imageFile != null
-                ? ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.file(File(_imageFile!.path), fit: BoxFit.cover),
-            )
-                : const Center(child: Text('No image selected.')),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              TextButton.icon(
-                onPressed: () async {
-                  final picker = ImagePicker();
-                  final file = await picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-                  if (file != null) {
-                    setState(() => _imageFile = file);
-                  }
-                },
-                icon: const Icon(Icons.add_photo_alternate_outlined),
-                label: const Text('Select an Image'),
-              ),
-              if (_imageFile != null)
-                TextButton.icon(
-                  onPressed: _generateTaskFromImage,
-                  icon: Icon(Icons.auto_awesome, color: Theme.of(context).primaryColor),
-                  label: Text('Analyze with AI', style: TextStyle(color: Theme.of(context).primaryColor)),
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildLocationInput() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    Icon(Icons.location_on, color: Theme.of(context).primaryColor),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(_locationAddress, style: const TextStyle(fontSize: 16))),
-                  ],
-                ),
-                if (_isFetchingLocation) const Padding(
-                  padding: EdgeInsets.only(top: 8.0),
-                  child: LinearProgressIndicator(),
-                ),
-              ],
-            )
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        trailing: uploading
+            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            : Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            TextButton.icon(
-              icon: const Icon(Icons.my_location),
-              label: const Text('Use Current'),
-              onPressed: _isFetchingLocation ? null : _getCurrentLocation,
-            ),
-            TextButton.icon(
-              icon: const Icon(Icons.map_outlined),
-              label: const Text('Set on Map'),
-              onPressed: _selectOnMap,
-            ),
+            if (file != null)
+              IconButton(
+                tooltip: 'Remove',
+                onPressed: onClear,
+                icon: const Icon(Icons.delete_outline),
+              ),
+            FilledButton.tonal(onPressed: onPick, child: const Text('Choose')),
           ],
-        )
-      ],
-    );
-  }
-
-  Widget _buildBudgetSuggestion() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      margin: const EdgeInsets.only(top: 8),
-      decoration: BoxDecoration(
-        color: Colors.teal.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Flexible(child: Text("✨ AI Suggestion: LKR $_suggestedBudget", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.teal.shade800))),
-          TextButton(
-            onPressed: () {
-              setState(() {
-                _budgetController.text = _suggestedBudget!;
-              });
-            },
-            child: const Text("Apply"),
-          )
-        ],
+        ),
       ),
     );
   }

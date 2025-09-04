@@ -1,178 +1,255 @@
+// lib/models/user_model.dart
+//
+// HelpifyUser / ServanaUser
+// • Unified user domain model that is tolerant to missing/legacy fields.
+// • Includes fields referenced across the app: role/uiMode, verification,
+//   ratings, wallet, categories, profile, portfolio, languages, etc.
+// • Provides fromFirestore(...) and toMap(...), plus some handy computed getters.
+//
+// Firestore (superset; all fields optional):
+// users/{uid} {
+//   displayName, email, phone, photoURL,
+//   role: 'poster'|'helper',
+//   uiMode: 'poster'|'helper',              // view mode when role == 'helper'
+//   isHelper: bool,
+//   verificationStatus: 'not_started'|'pending'|'verified'|'needs_more_info'|'rejected',
+//   walletBalance: number,
+//   registeredCategories: [string],
+//   averageRating: number, ratingCount: number, trustScore?: number,
+//   portfolioImageUrls: [string], videoIntroUrl?: string,
+//   hourlyRate?: number,
+//   languages?: [string],
+//   workLocationAddress?: string,
+//   presence?: {isLive: bool, lat: number, lng: number, lastSeen: ts},
+//   createdAt?: ts, updatedAt?: ts
+// }
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-enum VerificationTier { none, bronze, silver, gold }
-
 class HelpifyUser {
-  final String id;
+  final String uid;
+
+  // Identity
   final String? displayName;
   final String? email;
+  final String? phone;
   final String? photoURL;
-  final String? phone; // <-- UPDATED from phoneNumber
+
+  // Roles & modes
+  final String role;     // 'poster' | 'helper'
+  final String uiMode;   // 'poster' | 'helper' (helpers can browse as poster)
+  final bool isHelper;
+
+  // Verification
+  final String verificationStatus; // not_started | pending | verified | needs_more_info | rejected
+  bool get isHelperVerified => verificationStatus == 'verified';
+
+  // Money
+  final int walletBalance;
+
+  // Skills / categories
+  final List<String> registeredCategories;
+
+  // Ratings
+  final double averageRating;
+  final int ratingCount;
+  final int? trustScore;
+
+  // Profile extras
   final String? bio;
-  final bool? isHelper;
-  final bool isLive;
-
-  final String? qualifications;
-  final String? experience;
-  final List<String> skills;
-  final List<String> badges;
+  final List<String> languages;
+  final String? workLocationAddress;
   final double? hourlyRate;
-  final int trustScore;
 
+  // Portfolio
   final List<String> portfolioImageUrls;
   final String? videoIntroUrl;
 
-  final GeoPoint? workLocation;
-  final String? workLocationAddress;
+  // Presence (soft; not used for security)
+  final bool isLive;
+  final double? lat;
+  final double? lng;
 
-  final int ratingCount;
-  final double averageRating;
-  final int cancellationCount;
-  final int commissionFreeTasksPosted;
-  final int commissionFreeTasksCompleted;
-  final int bonusTasksAvailable;
-
-  final bool isProMember;
-  final Timestamp? proMembershipExpiry;
-
-  final double servCoinBalance;
-  final double creditCoinBalance;
-  final bool initialCreditGranted;
-
-  final String verificationStatus;
-  final VerificationTier verificationTier;
-
-  final String? interviewStatus;
-  final int? interviewScore;
-
-  final int onboardingStep;
-  final String? nicFrontUrl;
-  final String? nicBackUrl;
-  final String? policeClearanceUrl;
-  final String? proofOfAddressUrl;
-
-  final double profileCompletion;
+  // Timestamps
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
 
   HelpifyUser({
-    required this.id,
+    required this.uid,
     this.displayName,
     this.email,
+    this.phone,
     this.photoURL,
-    this.phone, // <-- UPDATED from phoneNumber
-    this.bio,
-    this.isHelper,
-    this.isLive = false,
-    this.qualifications,
-    this.experience,
-    this.skills = const [],
-    this.badges = const [],
-    this.hourlyRate,
-    this.trustScore = 10,
-    this.cancellationCount = 0,
-    this.workLocation,
-    this.workLocationAddress,
-    this.ratingCount = 0,
+    this.role = 'poster',
+    this.uiMode = 'poster',
+    this.isHelper = false,
+    this.verificationStatus = 'not_started',
+    this.walletBalance = 0,
+    this.registeredCategories = const [],
     this.averageRating = 0.0,
-    this.isProMember = false,
-    this.proMembershipExpiry,
-    this.commissionFreeTasksPosted = 0,
-    this.commissionFreeTasksCompleted = 0,
-    this.bonusTasksAvailable = 0,
-    this.servCoinBalance = 0.0,
-    this.creditCoinBalance = 0.0,
-    this.initialCreditGranted = false,
-    this.verificationStatus = 'not_verified',
-    this.verificationTier = VerificationTier.none,
-    this.onboardingStep = 0,
-    this.nicFrontUrl,
-    this.nicBackUrl,
-    this.policeClearanceUrl,
-    this.proofOfAddressUrl,
+    this.ratingCount = 0,
+    this.trustScore,
+    this.bio,
+    this.languages = const [],
+    this.workLocationAddress,
+    this.hourlyRate,
     this.portfolioImageUrls = const [],
     this.videoIntroUrl,
-    this.interviewStatus,
-    this.interviewScore,
-  }) : profileCompletion = _calculateProfileCompletion(
-    displayName: displayName,
-    photoURL: photoURL,
-    phone: phone, // <-- UPDATED from phoneNumber
-    bio: bio,
-    isHelper: isHelper,
-    qualifications: qualifications,
-    experience: experience,
-    skills: skills,
-    portfolioImageUrls: portfolioImageUrls,
-  );
+    this.isLive = false,
+    this.lat,
+    this.lng,
+    this.createdAt,
+    this.updatedAt,
+  });
 
-  factory HelpifyUser.fromFirestore(DocumentSnapshot<Map<String, dynamic>> snapshot) {
-    final data = snapshot.data();
-    if (data == null) {
-      throw StateError('Missing data for userId: ${snapshot.id}');
+  /// Friendly computed completion meter (0..1)
+  double get profileCompletion {
+    int have = 0, total = 5;
+    if ((displayName ?? '').trim().isNotEmpty) have++;
+    if ((photoURL ?? '').trim().isNotEmpty) have++;
+    if (languages.isNotEmpty) have++;
+    if ((workLocationAddress ?? '').trim().isNotEmpty) have++;
+    if (portfolioImageUrls.isNotEmpty || (bio ?? '').trim().isNotEmpty) have++;
+    return have / total;
+  }
+
+  /// Backwards compatibility for older code paths
+  String get activeRole => role; // alias
+  List<String>? get skills => registeredCategories; // alias
+  List<String> get badges {
+    // If you store badges elsewhere, wire them in; for now derive a couple
+    final out = <String>[];
+    if (isHelperVerified) out.add('Verified');
+    if (ratingCount >= 50) out.add('Experienced');
+    return out;
+  }
+
+  // -------- Factories --------
+
+  factory HelpifyUser.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final m = doc.data() ?? const <String, dynamic>{};
+
+    double _asDouble(dynamic v) {
+      if (v is num) return v.toDouble();
+      if (v is String) return double.tryParse(v) ?? 0.0;
+      return 0.0;
     }
+
+    int _asInt(dynamic v) {
+      if (v is num) return v.toInt();
+      if (v is String) return int.tryParse(v) ?? 0;
+      return 0;
+    }
+
+    DateTime? _ts(dynamic t) {
+      if (t is Timestamp) return t.toDate();
+      if (t is DateTime) return t;
+      return null;
+    }
+
+    List<String> _listStr(dynamic v) {
+      if (v is List) {
+        return v.map((e) => e?.toString() ?? '').where((e) => e.isNotEmpty).toList();
+      }
+      return const <String>[];
+    }
+
+    final presence = (m['presence'] is Map) ? Map<String, dynamic>.from(m['presence']) : const <String, dynamic>{};
+
     return HelpifyUser(
-      id: snapshot.id,
-      displayName: data['displayName'] as String?,
-      email: data['email'] as String?,
-      photoURL: data['photoURL'] as String?,
-      phone: data['phone'] as String?, // <-- UPDATED from phoneNumber
-      bio: data['bio'] as String?,
-      isHelper: data['isHelper'] as bool?,
-      isLive: data['isLive'] as bool? ?? false,
-      qualifications: data['qualifications'] as String?,
-      experience: data['experience'] as String?,
-      skills: List<String>.from(data['skills'] ?? []),
-      badges: List<String>.from(data['badges'] ?? []),
-      hourlyRate: (data['hourlyRate'] as num?)?.toDouble(),
-      trustScore: (data['trustScore'] as num?)?.toInt() ?? 10,
-      cancellationCount: data['cancellationCount'] as int? ?? 0,
-      workLocation: data['workLocation'] as GeoPoint?,
-      workLocationAddress: data['workLocationAddress'] as String?,
-      ratingCount: (data['ratingCount'] as num?)?.toInt() ?? 0,
-      averageRating: (data['averageRating'] as num?)?.toDouble() ?? 0.0,
-      isProMember: data['isProMember'] as bool? ?? false,
-      proMembershipExpiry: data['proMembershipExpiry'] as Timestamp?,
-      commissionFreeTasksPosted: (data['commissionFreeTasksPosted'] as num?)?.toInt() ?? 0,
-      commissionFreeTasksCompleted: (data['commissionFreeTasksCompleted'] as num?)?.toInt() ?? 0,
-      bonusTasksAvailable: (data['bonusTasksAvailable'] as num?)?.toInt() ?? 0,
-      servCoinBalance: (data['servCoinBalance'] as num?)?.toDouble() ?? 0.0,
-      creditCoinBalance: (data['creditCoinBalance'] as num?)?.toDouble() ?? 0.0,
-      initialCreditGranted: data['initialCreditGranted'] as bool? ?? false,
-      verificationStatus: data['verificationStatus'] as String? ?? 'not_verified',
-      verificationTier: VerificationTier.values.firstWhere(
-            (e) => e.name == data['verificationTier'],
-        orElse: () => VerificationTier.none,
-      ),
-      onboardingStep: data['onboardingStep'] as int? ?? 0,
-      nicFrontUrl: data['nicFrontUrl'] as String?,
-      nicBackUrl: data['nicBackUrl'] as String?,
-      policeClearanceUrl: data['policeClearanceUrl'] as String?,
-      proofOfAddressUrl: data['proofOfAddressUrl'] as String?,
-      portfolioImageUrls: List<String>.from(data['portfolioImageUrls'] ?? []),
-      videoIntroUrl: data['videoIntroUrl'] as String?,
-      interviewStatus: data['interviewStatus'] as String?,
-      interviewScore: data['interviewScore'] as int?,
+      uid: doc.id,
+      displayName: (m['displayName'] ?? m['name'])?.toString(),
+      email: (m['email'] ?? '')?.toString(),
+      phone: (m['phone'] ?? m['phoneNumber'])?.toString(),
+      photoURL: (m['photoURL'] ?? m['avatarUrl'])?.toString(),
+      role: (m['role'] ?? (m['isHelper'] == true ? 'helper' : 'poster'))?.toString() ?? 'poster',
+      uiMode: (m['uiMode'] ?? ((m['role'] ?? '') == 'helper' ? 'helper' : 'poster'))?.toString() ?? 'poster',
+      isHelper: (m['isHelper'] == true) || ((m['role'] ?? '') == 'helper'),
+      verificationStatus: (m['verificationStatus'] ?? 'not_started')?.toString() ?? 'not_started',
+      walletBalance: _asInt(m['walletBalance']),
+      registeredCategories: _listStr(m['registeredCategories']),
+      averageRating: _asDouble(m['averageRating']),
+      ratingCount: _asInt(m['ratingCount']),
+      trustScore: (m['trustScore'] is num) ? (m['trustScore'] as num).toInt() : null,
+      bio: (m['bio'] ?? '')?.toString(),
+      languages: _listStr(m['languages']),
+      workLocationAddress: (m['workLocationAddress'] ?? '')?.toString(),
+      hourlyRate: (m['hourlyRate'] is num) ? (m['hourlyRate'] as num).toDouble() : null,
+      portfolioImageUrls: _listStr(m['portfolioImageUrls']),
+      videoIntroUrl: (m['videoIntroUrl'] ?? '')?.toString(),
+      isLive: (presence['isLive'] == true),
+      lat: (presence['lat'] is num) ? (presence['lat'] as num).toDouble() : null,
+      lng: (presence['lng'] is num) ? (presence['lng'] as num).toDouble() : null,
+      createdAt: _ts(m['createdAt']),
+      updatedAt: _ts(m['updatedAt']),
     );
   }
 
-  static double _calculateProfileCompletion({
-    String? displayName, String? photoURL, String? phone, String? bio, // <-- UPDATED from phoneNumber
-    bool? isHelper, String? qualifications, String? experience, List<String>? skills,
-    List<String>? portfolioImageUrls,
-  }) {
-    int score = 0;
-    int maxScore = 4;
-    if (displayName != null && displayName.isNotEmpty) score++;
-    if (photoURL != null && photoURL.isNotEmpty) score++;
-    if (phone != null && phone.isNotEmpty) score++; // <-- UPDATED from phoneNumber
-    if (bio != null && bio.isNotEmpty) score++;
-    if (isHelper == true) {
-      maxScore = 8;
-      if (qualifications != null && qualifications.isNotEmpty) score++;
-      if (experience != null && experience.isNotEmpty) score++;
-      if (skills != null && skills.isNotEmpty) score++;
-      if (portfolioImageUrls != null && portfolioImageUrls.isNotEmpty) score++;
-    }
-    if (maxScore == 0) return 0.0;
-    return score / maxScore;
+  factory HelpifyUser.fromMap(Map<String, dynamic> m, {required String uid}) {
+    final fake = _FakeDoc(uid, m);
+    return HelpifyUser.fromFirestore(fake);
   }
+
+  Map<String, dynamic> toMap({bool includeTimestamps = true}) {
+    final out = <String, dynamic>{
+      'displayName': displayName,
+      'email': email,
+      'phone': phone,
+      'photoURL': photoURL,
+      'role': role,
+      'uiMode': uiMode,
+      'isHelper': isHelper,
+      'verificationStatus': verificationStatus,
+      'walletBalance': walletBalance,
+      'registeredCategories': registeredCategories,
+      'averageRating': averageRating,
+      'ratingCount': ratingCount,
+      if (trustScore != null) 'trustScore': trustScore,
+      'bio': bio,
+      'languages': languages,
+      'workLocationAddress': workLocationAddress,
+      if (hourlyRate != null) 'hourlyRate': hourlyRate,
+      'portfolioImageUrls': portfolioImageUrls,
+      'videoIntroUrl': videoIntroUrl,
+      'presence': {
+        'isLive': isLive,
+        if (lat != null) 'lat': lat,
+        if (lng != null) 'lng': lng,
+      },
+    };
+    if (includeTimestamps) {
+      out['updatedAt'] = FieldValue.serverTimestamp();
+      if (createdAt == null) out['createdAt'] = FieldValue.serverTimestamp();
+    }
+    return out;
+  }
+}
+
+// Tiny adapter so we can reuse fromDoc for raw map inputs.
+class _FakeDoc implements DocumentSnapshot<Map<String, dynamic>> {
+  _FakeDoc(this._id, this._data);
+  final String _id;
+  final Map<String, dynamic> _data;
+
+  @override
+  String get id => _id;
+
+  @override
+  Map<String, dynamic>? data() => _data;
+
+  @override
+  bool get exists => true;
+
+  // Unused members to satisfy the interface at compile time.
+  @override
+  SnapshotMetadata get metadata => throw UnimplementedError();
+
+  @override
+  DocumentReference<Map<String, dynamic>> get reference => throw UnimplementedError();
+
+  @override
+  dynamic operator [](Object field) => _data[field];
+
+  @override
+  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

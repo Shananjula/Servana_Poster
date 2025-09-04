@@ -410,3 +410,132 @@ exports.onUserCreateForReferral = functions.firestore
       }
       return null;
     });
+
+// --- Admin helper ---
+async function assertAdmin(context) {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated','Sign in required');
+  }
+  const uid = context.auth.uid;
+  const doc = await db.collection('users').doc(uid).get();
+  const m = doc.data() || {};
+  const isAdmin = (m.isAdmin === true) || (m.roles && m.roles.admin === true);
+  if (!isAdmin) {
+    throw new functions.https.HttpsError('permission-denied','Admin only');
+  }
+  return uid;
+}
+
+
+// --- Resolve dispute (admin callable) ---
+exports.resolveDisputeAdmin = functions.https.onCall(async (data, context) => {
+  const uid = await assertAdmin(context);
+  const {disputeId, resolution, posterDelta = 0, helperDelta = 0, notes = ''} = data || {};
+  if (!disputeId || !resolution) throw new functions.https.HttpsError('invalid-argument','Missing fields');
+  const ref = db.collection('disputes').doc(disputeId);
+  await db.runTransaction(async (trx) => {
+    const snap = await trx.get(ref);
+    const m = snap.data() || {};
+    const posterId = m.posterId || '';
+    const helperId = m.helperId || '';
+    // coin deltas
+    async function applyDelta(userId, amt) {
+      if (!userId || !amt) return;
+      const uref = db.collection('users').doc(userId);
+      const usnap = await trx.get(uref);
+      const u = usnap.data() || {};
+      const prev = u.walletBalance || 0;
+      trx.set(uref, {walletBalance: prev + amt, updatedAt: admin.firestore.FieldValue.serverTimestamp()}, {merge: true});
+      const tx = db.collection('transactions').doc();
+      trx.set(tx, {
+        userId, type: 'dispute_adjustment', amount: amt, status: 'ok',
+        notes: `dispute:${disputeId} ${notes||''}`,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+    await applyDelta(posterId, posterDelta);
+    await applyDelta(helperId, helperDelta);
+    trx.set(ref, {
+      status: 'resolved',
+      resolution,
+      resolutionNotes: notes,
+      resolvedBy: uid,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, {merge: true});
+    const audit = db.collection('admin_audit').doc();
+    trx.set(audit, {
+      actor: uid, action: 'resolve_dispute', disputeId, resolution, posterDelta, helperDelta, notes,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+  });
+  return {ok:true};
+});
+
+
+// --- Create payout batch (admin callable) ---
+exports.createPayoutBatch = functions.https.onCall(async (data, context) => {
+  const uid = await assertAdmin(context);
+  const lines = (data && Array.isArray(data.lines)) ? data.lines : [];
+  if (!lines.length) throw new functions.https.HttpsError('invalid-argument','No lines');
+  const total = lines.reduce((acc, l) => acc + (parseInt(l.amount||0,10)||0), 0);
+  const batchRef = db.collection('payouts').doc();
+  await batchRef.set({
+    status: 'pending',
+    total, lines,
+    createdBy: uid,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  });
+  const audit = db.collection('admin_audit').doc();
+  await audit.set({actor: uid, action: 'create_payout_batch', batchId: batchRef.id, total, createdAt: admin.firestore.FieldValue.serverTimestamp()});
+  return {ok:true, id: batchRef.id};
+});
+
+// --- Mark payout paid (admin callable) ---
+exports.markPayoutPaid = functions.https.onCall(async (data, context) => {
+  const uid = await assertAdmin(context);
+  const {batchId, txId} = data || {};
+  if (!batchId || !txId) throw new functions.https.HttpsError('invalid-argument','Missing fields');
+  const ref = db.collection('payouts').doc(batchId);
+  await ref.set({
+    status: 'paid',
+    txId,
+    paidAt: admin.firestore.FieldValue.serverTimestamp(),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    paidBy: uid,
+  }, {merge: true});
+  const audit = db.collection('admin_audit').doc();
+  await audit.set({actor: uid, action: 'mark_payout_paid', batchId, txId, createdAt: admin.firestore.FieldValue.serverTimestamp()});
+  return {ok:true};
+});
+
+
+// --- Send push campaign (admin callable) ---
+exports.sendCampaign = functions.https.onCall(async (data, context) => {
+  const uid = await assertAdmin(context);
+  const {title, body, category, city, trustMin} = data || {};
+  if (!title || !body) throw new functions.https.HttpsError('invalid-argument','Missing title/body');
+  const topics = [];
+  if (category) {
+    topics.push(`tasks_${category.toLowerCase()}`);
+    if (city) topics.push(`tasks_${category.toLowerCase()}_${city.toLowerCase()}`);
+  } else {
+    // fallback: global topic per role or category broadcast
+    topics.push('all_helpers');
+  }
+  for (const topic of topics) {
+    await admin.messaging().send({
+      notification: {title, body},
+      data: {type:'system', audience: topic},
+      topic
+    });
+  }
+  const doc = {
+    title, body, audience: topics.join(','), trustMin: trustMin||null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    createdBy: uid,
+  };
+  await db.collection('campaigns').add(doc);
+  return {ok:true, topics};
+});

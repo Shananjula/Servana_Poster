@@ -1,8 +1,20 @@
+// lib/screens/top_up_screen.dart
+//
+// Poster — Top Up Screen (self-contained dev credit)
+// ---------------------------------------------------
+// • Shows current wallet balance
+// • Preset amounts + custom amount
+// • Payment method picker (placeholder)
+// • DEV ONLY (kDebugMode): credits wallet directly using Firestore
+//   and writes a transactions row (type: 'topup_debug').
+// • RELEASE: shows a notice that real payments aren't integrated.
+//
+// Deps: firebase_auth, cloud_firestore, flutter/material, foundation
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:servana/models/transaction_model.dart';
-import 'package:intl/intl.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 class TopUpScreen extends StatefulWidget {
   const TopUpScreen({super.key});
@@ -12,132 +24,285 @@ class TopUpScreen extends StatefulWidget {
 }
 
 class _TopUpScreenState extends State<TopUpScreen> {
-  final List<int> _topUpAmounts = [500, 1000, 2000, 5000];
-  int? _selectedAmount;
-  bool _isProcessing = false;
+  final _auth = FirebaseAuth.instance;
+  final _db = FirebaseFirestore.instance;
 
-  Future<void> _processTopUp() async {
-    if (_selectedAmount == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a top-up amount.'), backgroundColor: Colors.red),
-      );
+  // Amount model
+  final List<int> _presets = const [500, 1000, 2000, 5000];
+  int? _selectedPreset = 1000;
+  final TextEditingController _customCtrl = TextEditingController(text: '1000');
+
+  // Payment method (placeholder)
+  // 0=card, 1=bank, 2=other
+  int _method = 0;
+
+  bool _busy = false;
+
+  String? get _uid => _auth.currentUser?.uid;
+
+  int get _effectiveAmount {
+    final t = _customCtrl.text.trim();
+    if (t.isNotEmpty) {
+      final v = int.tryParse(t);
+      if (v != null && v > 0) return v;
+    }
+    return _selectedPreset ?? 0;
+  }
+
+  Future<void> _handleTopUp() async {
+    final uid = _uid;
+    if (uid == null) {
+      _snack('Please sign in.');
       return;
     }
 
-    setState(() => _isProcessing = true);
-
-    // Simulate payment gateway delay
-    await Future.delayed(const Duration(seconds: 2));
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) throw Exception("You are not logged in.");
-
-      final userDocRef = FirebaseFirestore.instance.collection('users').doc(user.uid);
-      final transactionRef = userDocRef.collection('transactions').doc();
-
-      // Use a WriteBatch for an atomic operation
-      final writeBatch = FirebaseFirestore.instance.batch();
-
-      // 1. Update the user's wallet balance
-      writeBatch.update(userDocRef, {
-        'servCoinBalance': FieldValue.increment(_selectedAmount!),
-      });
-
-      // 2. Create a transaction record
-      writeBatch.set(transactionRef, {
-        'amount': _selectedAmount!,
-        'type': TransactionType.topUp.name,
-        'description': 'Wallet Top-Up',
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-
-      // Commit both operations together
-      await writeBatch.commit();
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Successfully topped up ${_selectedAmount!} Serv Coins!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        Navigator.of(context).pop();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('An error occurred: ${e.toString()}'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
+    final amount = _effectiveAmount;
+    if (amount <= 0) {
+      _snack('Enter a valid amount.');
+      return;
     }
+
+    setState(() => _busy = true);
+    try {
+      if (!kDebugMode) {
+        _snack('Real payment not yet integrated.');
+        return;
+      }
+
+      // -------- DEV CREDIT (no service dependency) --------
+      final userRef = _db.collection('users').doc(uid);
+      final txRef = _db.collection('transactions').doc();
+
+      await _db.runTransaction((trx) async {
+        // Increment wallet
+        trx.set(userRef, {
+          'walletBalance': FieldValue.increment(amount),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+
+        // Transaction log
+        trx.set(txRef, {
+          'userId': uid,
+          'type': 'topup_debug',
+          'amount': amount,
+          'status': 'ok',
+          'note': 'DEV quick top-up (method=$_method)',
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      });
+
+      _snack('Credited LKR $amount (dev).');
+      // Optionally: Navigator.of(context).pop();
+    } catch (e) {
+      _snack('Error: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  void dispose() {
+    _customCtrl.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final currencyFormat = NumberFormat("#,##0", "en_US");
-
+    final uid = _uid;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Top Up Wallet'),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Icon(Icons.account_balance_wallet_outlined, size: 60, color: Colors.blue),
-            const SizedBox(height: 16),
-            Text(
-              'Select Top-Up Amount',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '1 LKR = 1 Serv Coin. Your wallet balance is used to pay platform commissions.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyLarge?.copyWith(color: Colors.grey[600]),
-            ),
-            const SizedBox(height: 32),
-            Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 12.0,
-              runSpacing: 12.0,
-              children: _topUpAmounts.map((amount) {
-                final isSelected = _selectedAmount == amount;
-                return ChoiceChip(
-                  label: Text('LKR ${currencyFormat.format(amount)}'),
-                  selected: isSelected,
-                  onSelected: (selected) {
-                    if (selected) {
-                      setState(() => _selectedAmount = amount);
-                    }
-                  },
-                  labelStyle: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: isSelected ? Colors.white : theme.primaryColor,
+      appBar: AppBar(title: const Text('Top up')),
+      body: uid == null
+          ? const Center(child: Text('Please sign in to top up.'))
+          : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _db.collection('users').doc(uid).snapshots(),
+        builder: (context, snap) {
+          final m = snap.data?.data();
+          final balance = (m?['walletBalance'] is num)
+              ? (m!['walletBalance'] as num).toInt()
+              : 0;
+
+          return AbsorbPointer(
+            absorbing: _busy,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _BalanceTile(balance: balance),
+
+                const SizedBox(height: 24),
+                Text('Amount', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: _presets.map((v) {
+                    final selected = int.tryParse(_customCtrl.text.trim()) == v;
+                    return ChoiceChip(
+                      label: Text('LKR $v'),
+                      selected: selected,
+                      onSelected: (s) {
+                        setState(() {
+                          _selectedPreset = v;
+                          _customCtrl.text = v.toString();
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+
+                const SizedBox(height: 16),
+                Text('Custom amount (LKR)', style: Theme.of(context).textTheme.labelMedium),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _customCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. 1000',
+                    border: OutlineInputBorder(),
                   ),
-                  selectedColor: theme.primaryColor,
-                  backgroundColor: theme.primaryColor.withOpacity(0.1),
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                );
-              }).toList(),
+                  onChanged: (_) => setState(() {}),
+                ),
+
+                const SizedBox(height: 24),
+                Text('Payment method', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 12),
+                _PaymentMethodTile(
+                  title: 'Card (Visa/Master)',
+                  icon: Icons.credit_card,
+                  value: 0,
+                  groupValue: _method,
+                  onChanged: (v) => setState(() => _method = v),
+                ),
+                _PaymentMethodTile(
+                  title: 'Bank transfer',
+                  icon: Icons.account_balance,
+                  value: 1,
+                  groupValue: _method,
+                  onChanged: (v) => setState(() => _method = v),
+                ),
+                _PaymentMethodTile(
+                  title: 'Other',
+                  icon: Icons.account_balance_wallet_outlined,
+                  value: 2,
+                  groupValue: _method,
+                  onChanged: (v) => setState(() => _method = v),
+                ),
+
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: _busy ? null : _handleTopUp,
+                  icon: Icon(kDebugMode ? Icons.lock_open : Icons.lock_outline),
+                  label: const Text('Top up now'),
+                ),
+
+                if (kDebugMode) ...[
+                  const SizedBox(height: 16),
+                  const Center(
+                    child: Text(
+                      'DEV: credit instantly (no payment)',
+                      style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                    ),
+                  ),
+                ],
+
+                if (_busy) ...[
+                  const SizedBox(height: 16),
+                  const Center(child: CircularProgressIndicator()),
+                ],
+              ],
             ),
-            const Spacer(),
-            ElevatedButton(
-              onPressed: _isProcessing ? null : _processTopUp,
-              style: ElevatedButton.styleFrom(
-                minimumSize: const Size(double.infinity, 50),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _BalanceTile extends StatelessWidget {
+  final int balance;
+  const _BalanceTile({required this.balance});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                color: Theme.of(context).colorScheme.primaryContainer,
               ),
-              child: _isProcessing
-                  ? const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white))
-                  : Text(_selectedAmount == null ? 'Select an Amount' : 'Proceed to Pay LKR ${currencyFormat.format(_selectedAmount)}'),
+              child: const Icon(Icons.account_balance_wallet_outlined, size: 28),
             ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Current balance', style: t.labelMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'LKR $balance',
+                    style: t.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaymentMethodTile extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final int value;
+  final int groupValue;
+  final ValueChanged<int> onChanged;
+
+  const _PaymentMethodTile({
+    required this.title,
+    required this.icon,
+    required this.value,
+    required this.groupValue,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = value == groupValue;
+    return InkWell(
+      onTap: () => onChanged(value),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).dividerColor,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(selected ? Icons.radio_button_checked : Icons.radio_button_off),
+            const SizedBox(width: 12),
+            Icon(icon),
+            const SizedBox(width: 12),
+            Expanded(child: Text(title)),
           ],
         ),
       ),
