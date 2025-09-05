@@ -18,6 +18,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:servana/screens/notifications_screen.dart';
 import 'package:servana/screens/legal_screen.dart';
 import 'package:servana/utils/app_settings.dart';
+import 'package:servana/screens/dispute_center_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -199,6 +200,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
           Text('Legal & about', style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant)),
           const SizedBox(height: 6),
+          // ADD — Dispute Center entry
+          _tile(
+            context,
+            icon: Icons.balance_rounded,
+            title: 'Dispute Center',
+            subtitle: 'View & resolve disputes, add evidence',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const DisputeCenterScreen()),
+            ),
+          ),
           _tile(
             context,
             icon: Icons.description_rounded,
