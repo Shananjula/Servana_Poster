@@ -22,6 +22,10 @@ import 'package:servana/screens/post_task_screen.dart';
 import 'package:servana/widgets/booking_sheet.dart';
 import 'package:servana/widgets/cancel_sheet.dart';
 import 'package:servana/widgets/pin_sheet.dart';
+import 'package:servana/services/chat_service.dart';
+import 'package:servana/utils/chat_id.dart';
+import 'package:servana/screens/chat_thread_screen.dart';
+
 
 class TaskDetailsScreen extends StatelessWidget {
   const TaskDetailsScreen({super.key, required this.taskId});
