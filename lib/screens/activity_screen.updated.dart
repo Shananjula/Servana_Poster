@@ -9,7 +9,6 @@
 
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:servana/services/chat_navigation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -17,7 +16,6 @@ import 'package:servana/screens/task_details_screen.dart';
 import 'package:servana/screens/dispute_center_screen.dart';
 import 'package:servana/screens/notifications_screen.dart';
 import 'package:servana/widgets/offer_action_sheet.dart';
-import 'package:servana/screens/manage_offers_screen.dart'; // ADDED THIS IMPORT
 
 class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key});
@@ -485,7 +483,7 @@ class _OfferTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    // final title = (data['title'] ?? data['taskTitle'] ?? 'Offer').toString();
+    final title = (data['title'] ?? data['taskTitle'] ?? 'Offer').toString();
     final helper = (data['helperName'] ?? data['helperId'] ?? 'Helper').toString();
     final price = data['price'] ?? data['amount'];
     final priceText = price == null ? '' : 'LKR $price';
@@ -501,13 +499,12 @@ class _OfferTile extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Patch starts here
             GestureDetector(
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => ManageOffersScreen(taskId: taskId, taskTitle: (data['title'] ?? data['taskTitle'])?.toString()),
-                ));
-              },
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => TaskDetailsScreen(taskId: taskId),
+                ),
+              ),
               child: Row(
                 children: [
                   Container(
@@ -525,7 +522,7 @@ class _OfferTile extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          (data['title'] ?? data['taskTitle'] ?? 'Offer').toString(),
+                          title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(fontWeight: FontWeight.w600),
@@ -549,7 +546,6 @@ class _OfferTile extends StatelessWidget {
                 ],
               ),
             ),
-            // Patch ends here
             const SizedBox(height: 10),
             Row(
               children: [

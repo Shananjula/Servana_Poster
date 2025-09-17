@@ -13,7 +13,7 @@ import 'package:servana/screens/login_screen.dart'; // <- your phone login scree
 import 'package:servana/utils/analytics_observer.dart';
 import 'package:servana/utils/app_settings.dart';
 
-// NEW: register FCM token after sign-in
+// Register FCM tokens after sign-in
 import 'package:servana/services/push_service.dart';
 
 Future<void> main() async {
@@ -89,40 +89,5 @@ class MyApp extends StatelessWidget {
         );
       },
     );
-  }
-}
-
-/// Registers the device FCM token after sign-in without blocking your existing Home UI.
-class _PosterHomeWithPush extends StatefulWidget {
-  final Widget child;
-  const _PosterHomeWithPush({required this.child});
-
-  @override
-  State<_PosterHomeWithPush> createState() => _PosterHomeWithPushState();
-}
-
-class _PosterHomeWithPushState extends State<_PosterHomeWithPush> {
-  bool _attempted = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initPush();
-  }
-
-  Future<void> _initPush() async {
-    try {
-      await PushService.instance.initForCurrentUser(appRole: 'poster');
-    } catch (_) {
-      // Never block UI on push setup
-    } finally {
-      if (mounted) setState(() => _attempted = true);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Optionally show a tiny banner while registering. We keep it simple.
-    return widget.child;
   }
 }

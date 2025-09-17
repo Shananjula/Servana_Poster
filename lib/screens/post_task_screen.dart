@@ -110,9 +110,14 @@ Future<String> publishTask({
     'status': 'open',
     'posterId': posterId,
     'createdAt': now,
+    'updatedAt': now,
+    'isPhysical': isPhysical,
 
     // Categories
     if (mainCategoryLabelOrId != null) 'category': mainCategoryLabelOrId,
+    if (mainCategoryLabelOrId != null) 'mainCategoryLabelOrId': mainCategoryLabelOrId,
+    if (primaryCatId != null && primaryCatId.isNotEmpty) 'mainCategoryId': primaryCatId,
+    if (primaryCatId != null && primaryCatId.isNotEmpty) 'categorySlug': primaryCatId,
     if (subcategory != null && subcategory.isNotEmpty) 'subcategory': subcategory,
     if (primaryCatId != null) 'categoryId': primaryCatId,
     if (categoryIds.isNotEmpty) 'categoryIds': categoryIds,
