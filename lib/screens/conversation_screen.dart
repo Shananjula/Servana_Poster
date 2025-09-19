@@ -1,49 +1,47 @@
-// lib/screens/conversation_screen.dart
-//
-// Works with EITHER:
-//   ConversationScreen(helperId: 'H123', helperName: 'Alex')
-// or
-//   ConversationScreen(channelId: 'poster_helper')   // e.g., "uidA_uidB" or a doc id in pairs/
-//
-// It resolves the helper id/name when only channelId is given, and uses pairs/{id}/messages.
-// Also guards Firestore calls and uses a clean Column → Expanded → ListView layout.
-
-import 'package:flutter/material.dart';
+// lib/screens/conversation_screen.dart — Back-compat, model-free (fixed braces)
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
 
-import 'package:servana/services/intro_fee_service.dart';
+import '../services/chat_service_compat.dart';
+import '../services/offer_actions.dart';
 
 class ConversationScreen extends StatefulWidget {
+  // New-style params
+  final String? chatChannelId;
+  final String? otherUserId;
+  final String? otherUserName;
+  final String? taskId;
+  final String? taskTitle;
+
+  // Legacy params (still honored)
+  final String? helperId;    // maps to otherUserId
+  final String? helperName;  // optional display
+
   const ConversationScreen({
     super.key,
+    this.chatChannelId,
+    this.otherUserId,
+    this.otherUserName,
+    this.taskId,
+    this.taskTitle,
+    // legacy
     this.helperId,
     this.helperName,
-    this.channelId,
   });
-
-  /// Provide these when opening from a helper card/profile.
-  final String? helperId;
-  final String? helperName;
-
-  /// Provide this when opening from a notification or a chat list
-  /// that only knows the channel id (pair id).
-  final String? channelId;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
 }
 
 class _ConversationScreenState extends State<ConversationScreen> {
-  bool _loading = true;
-  bool _unlocked = false;
+  final TextEditingController _msgCtl = TextEditingController();
+  final ScrollController _scrollCtl = ScrollController();
+  bool _busy = false;
 
-  String _posterId = '';
-  String _helperId = '';
-  String _helperName = 'Conversation';
-  String _pairId = ''; // pairs/{_pairId}
-
-  final _msgCtrl = TextEditingController();
+  String? _channelId;    // resolved channel id
+  String? _counterpart;  // resolved other user id
 
   @override
   void initState() {
@@ -51,310 +49,356 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _bootstrap();
   }
 
+  Future<void> _bootstrap() async {
+    // Resolve other user id from new or legacy field
+    final other = widget.otherUserId ?? widget.helperId;
+    _counterpart = other;
+
+    // Resolve channel id: use provided or create one
+    if ((widget.chatChannelId ?? '').isNotEmpty) {
+      setState(() => _channelId = widget.chatChannelId);
+      return;
+    }
+
+    if ((other ?? '').isEmpty) return;
+
+    final ch = await ChatServiceCompat.instance.createOrGetChannel(
+      other!,
+      taskId: widget.taskId,
+      taskTitle: widget.taskTitle,
+      participantNames: {
+        other: widget.otherUserName ?? widget.helperName ?? 'User',
+      },
+    );
+    if (mounted) setState(() => _channelId = ch);
+  }
+
   @override
   void dispose() {
-    _msgCtrl.dispose();
+    _msgCtl.dispose();
+    _scrollCtl.dispose();
     super.dispose();
   }
 
-  Future<void> _bootstrap() async {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      _posterId = user?.uid ?? '';
+  CollectionReference<Map<String, dynamic>> _msgs(String channelId) =>
+      FirebaseFirestore.instance
+          .collection('chats')
+          .doc(channelId)
+          .collection('messages')
+          .withConverter<Map<String, dynamic>>(
+            fromFirestore: (snap, _) => snap.data() ?? <String, dynamic>{},
+            toFirestore: (data, _) => data,
+          );
 
-      // Resolve ids
-      if ((widget.helperId ?? '').isNotEmpty) {
-        _helperId = widget.helperId!;
-        _helperName = (widget.helperName ?? 'Conversation').trim().isEmpty
-            ? 'Conversation'
-            : widget.helperName!.trim();
-        _pairId = _pairKey(_posterId, _helperId);
-      } else if ((widget.channelId ?? '').isNotEmpty) {
-        _pairId = widget.channelId!.trim();
-
-        // If it looks like "uidA_uidB", derive helperId from it:
-        if (_pairId.contains('_')) {
-          final parts = _pairId.split('_')..sort();
-          // Poster is current user; helper is the other one
-          if (parts.length == 2 && _posterId.isNotEmpty) {
-            _helperId = (parts[0] == _posterId) ? parts[1] : parts[0];
-          }
-        }
-
-        // If helperId still unknown, try reading pairs/{pairId}
-        if (_helperId.isEmpty) {
-          try {
-            final p = await FirebaseFirestore.instance
-                .collection('pairs')
-                .doc(_pairId)
-                .get();
-            final data = p.data() ?? {};
-            final members = (data['members'] as List?)?.map((e) => e.toString()).toList() ?? const [];
-            if (members.isNotEmpty && _posterId.isNotEmpty) {
-              _helperId = members.firstWhere(
-                    (m) => m != _posterId,
-                orElse: () => members.first,
-              );
-            }
-            // Try a name on the header: otherName/helperName/displayName
-            final hdrName = (data['otherName'] ?? data['helperName'] ?? data['displayName'] ?? '').toString().trim();
-            if (hdrName.isNotEmpty) _helperName = hdrName;
-          } catch (_) {
-            // tolerate missing/permission errors
-          }
-        }
-
-        // If we STILL don't know helper name, leave generic
-      } else {
-        // Neither helperId nor channelId given — keep screen benign
-        _helperId = '';
-        _pairId = '';
-      }
-
-      // Unlock state (safe)
-      _unlocked = await IntroFeeService.isPairUnlocked(
-        posterId: _posterId,
-        helperId: _helperId,
-      );
-    } catch (_) {
-      _unlocked = false;
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  String _pairKey(String a, String b) {
-    final list = [a, b]..sort();
-    return '${list[0]}_${list[1]}';
-  }
+  DocumentReference<Map<String, dynamic>> _channel(String channelId) =>
+      FirebaseFirestore.instance
+          .collection('chats')
+          .doc(channelId)
+          .withConverter<Map<String, dynamic>>(
+            fromFirestore: (snap, _) => snap.data() ?? <String, dynamic>{},
+            toFirestore: (data, _) => data,
+          );
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final title = (_helperName.isEmpty ? 'Conversation' : _helperName);
-
+    final title = widget.taskTitle ?? widget.otherUserName ?? widget.helperName ?? 'Conversation';
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
-        centerTitle: false,
-      ),
-      backgroundColor: cs.background,
-      body: Column(
-        children: [
-          if (_loading) const LinearProgressIndicator(),
-          if (!_loading && !_unlocked)
-            _LockedBanner(helperName: _helperName),
-
-          Expanded(
-            child: _MessagesList(
-              posterId: _posterId,
-              helperId: _helperId,
-              pairId: _pairId.isNotEmpty
-                  ? _pairId
-                  : (_helperId.isNotEmpty ? _pairKey(_posterId, _helperId) : ''),
-            ),
-          ),
-
-          _Composer(
-            enabled: !_loading && _unlocked && _posterId.isNotEmpty && (_helperId.isNotEmpty || _pairId.isNotEmpty),
-            controller: _msgCtrl,
-            onSend: _sendMessage,
+        actions: [
+          IconButton(
+            tooltip: 'Counter offer',
+            icon: const Icon(Icons.swap_horiz),
+            onPressed: _onCounterFromChat,
           ),
         ],
       ),
+      body: (_channelId == null)
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+              children: [
+                Expanded(
+                  child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _msgs(_channelId!).orderBy('timestamp').snapshots(),
+                    builder: (context, snap) {
+                      if (snap.hasError) {
+                        return Center(child: Text('Failed to load: ${snap.error}'));
+                      }
+                      if (!snap.hasData) {
+                        return const Center(child: CircularProgressIndicator());
+                      }
+                      final docs = snap.data!.docs;
+                      return ListView.builder(
+                        controller: _scrollCtl,
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        itemCount: docs.length,
+                        itemBuilder: (_, i) {
+                          final m = docs[i].data();
+                          final me = m['senderId'] == _currentUid();
+                          final text = (m['text'] ?? '') as String;
+                          return Align(
+                            alignment: me ? Alignment.centerRight : Alignment.centerLeft,
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(vertical: 2),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: me ? Colors.blue.shade100 : Colors.grey.shade300,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(text),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+                if (_busy) const LinearProgressIndicator(minHeight: 2),
+                _Composer(controller: _msgCtl, onSend: _sendMessage),
+              ],
+            ),
     );
   }
 
   Future<void> _sendMessage() async {
-    final text = _msgCtrl.text.trim();
-    if (text.isEmpty) return;
+    final text = _msgCtl.text.trim();
+    if (text.isEmpty || _channelId == null) return;
 
-    final effectivePairId = _pairId.isNotEmpty
-        ? _pairId
-        : (_helperId.isNotEmpty ? _pairKey(_posterId, _helperId) : '');
+    final msg = <String, dynamic>{
+      'text': text,
+      'senderId': _currentUid(),
+      'timestamp': FieldValue.serverTimestamp(),
+    };
 
-    if (effectivePairId.isEmpty) {
-      // Nothing we can do without ids
+    _msgCtl.clear();
+    try {
+      await FirebaseFirestore.instance.runTransaction((tx) async {
+        final mref = _msgs(_channelId!).doc();
+        tx.set(mref, msg);
+        tx.update(_channel(_channelId!), {
+          'lastMessage': text,
+          'lastMessageSenderId': _currentUid(),
+          'lastMessageTimestamp': FieldValue.serverTimestamp(),
+        });
+      });
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollCtl.hasClients) {
+          _scrollCtl.animateTo(
+            _scrollCtl.position.maxScrollExtent + 60,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to send: $e')));
+      }
+    }
+  }
+
+  Future<void> _onCounterFromChat() async {
+    if ((widget.taskId ?? '').isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This chat is not linked to a task.')));
+      return;
+    }
+    final other = _counterpart;
+    if ((other ?? '').isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Missing other user id.')));
       return;
     }
 
-    try {
-      final ref = FirebaseFirestore.instance
-          .collection('pairs')
-          .doc(effectivePairId)
-          .collection('messages');
+    final data = await showDialog<_CounterData>(
+      context: context,
+      builder: (ctx) => const _CounterDialog(),
+    );
+    if (data == null) return;
 
-      await ref.add({
-        'from': _posterId,
-        'to': _helperId, // may be empty if unknown; tolerated
-        'text': text,
-        'createdAt': FieldValue.serverTimestamp(),
+    try {
+      setState(() => _busy = true);
+
+      // Find latest negotiable offer (pending/negotiating/counter) for this helper on this task.
+      final offerId = await _findLatestNegotiableOffer(taskId: widget.taskId!, helperId: other!);
+      if (offerId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No negotiable offer found for this helper.')));
+        return;
+      }
+
+      // Update canonical offer (not just a chat bubble).
+      await OfferActions.instance.proposeCounter(
+        taskId: widget.taskId!,
+        offerId: offerId,
+        price: data.amount,
+        note: data.note,
+      );
+
+      // Also drop a small system message for context.
+      final text = 'Counter proposed: LKR ${data.amount.toStringAsFixed(0)}'
+          '${(data.note?.isNotEmpty ?? false) ? ' — ${data.note}' : ''}';
+      await FirebaseFirestore.instance.runTransaction((tx) async {
+        final mref = _msgs(_channelId!).doc();
+        tx.set(mref, {
+          'text': text,
+          'senderId': _currentUid(),
+          'timestamp': FieldValue.serverTimestamp(),
+          'kind': 'system.counter',
+          'offerId': offerId,
+          'taskId': widget.taskId,
+          'amount': data.amount,
+        });
+        tx.update(_channel(_channelId!), {
+          'lastMessage': text,
+          'lastMessageSenderId': _currentUid(),
+          'lastMessageTimestamp': FieldValue.serverTimestamp(),
+        });
       });
 
-      // Header
-      await FirebaseFirestore.instance.collection('pairs').doc(effectivePairId).set({
-        'members': _helperId.isNotEmpty ? [_posterId, _helperId] : [_posterId],
-        'lastMessage': text,
-        'updatedAt': FieldValue.serverTimestamp(),
-        if (_helperName.isNotEmpty) 'otherName': _helperName,
-      }, SetOptions(merge: true));
-
-      _msgCtrl.clear();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Counter sent')));
+      }
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to send: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to counter: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
-}
 
-class _LockedBanner extends StatelessWidget {
-  const _LockedBanner({required this.helperName});
-  final String helperName;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        border: Border(
-          bottom: BorderSide(color: cs.outline.withOpacity(0.12)),
-        ),
-      ),
-      child: Text(
-        'Chat is locked. Unlock from the helper card/profile to start messaging ${helperName.isEmpty ? '' : helperName}.',
-        style: TextStyle(color: cs.onSurfaceVariant),
-      ),
-    );
-  }
-}
-
-class _MessagesList extends StatelessWidget {
-  const _MessagesList({
-    required this.posterId,
-    required this.helperId,
-    required this.pairId,
-  });
-
-  final String posterId;
-  final String helperId;
-  final String pairId;
-
-  @override
-  Widget build(BuildContext context) {
-    // If we still don't have an id, show friendly message
-    if ((pairId.isEmpty) && (posterId.isEmpty || helperId.isEmpty)) {
-      return const Center(child: Text('Missing chat IDs.'));
-    }
-
-    final effectivePairId =
-    pairId.isNotEmpty ? pairId : _pairKey(posterId, helperId);
-
-    final q = FirebaseFirestore.instance
-        .collection('pairs')
-        .doc(effectivePairId)
-        .collection('messages')
-        .orderBy('createdAt', descending: true);
-
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: q.snapshots(),
-      builder: (context, snap) {
-        if (!snap.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        final docs = snap.data!.docs;
-        if (docs.isEmpty) {
-          return const Center(child: Text('Say hi 👋'));
-        }
-        return ListView.builder(
-          reverse: true,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          itemCount: docs.length,
-          itemBuilder: (_, i) {
-            final m = docs[i].data();
-            final from = (m['from'] ?? '').toString();
-            final text = (m['text'] ?? '').toString();
-            final mine = from == posterId;
-            return Align(
-              alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-              child: Container(
-                margin: const EdgeInsets.symmetric(vertical: 4),
-                padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: mine
-                      ? Theme.of(context).colorScheme.primaryContainer
-                      : Theme.of(context).colorScheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .outline
-                        .withOpacity(0.12),
-                  ),
-                ),
-                child: Text(text),
-              ),
-            );
-          },
-        );
-      },
-    );
+  Future<String?> _findLatestNegotiableOffer({
+    required String taskId,
+    required String helperId,
+  }) async {
+    final q = await FirebaseFirestore.instance
+        .collection('tasks')
+        .doc(taskId)
+        .collection('offers')
+        .where('helperId', isEqualTo: helperId)
+        .where('status', whereIn: ['pending', 'negotiating', 'counter'])
+        .orderBy('createdAt', descending: true)
+        .limit(1)
+        .get();
+    if (q.docs.isEmpty) return null;
+    return q.docs.first.id;
   }
 
-  String _pairKey(String a, String b) {
-    final list = [a, b]..sort();
-    return '${list[0]}_${list[1]}';
-  }
+  String _currentUid() => FirebaseAuth.instance.currentUser!.uid;
 }
 
 class _Composer extends StatelessWidget {
-  const _Composer({
-    required this.enabled,
-    required this.controller,
-    required this.onSend,
-  });
-
-  final bool enabled;
   final TextEditingController controller;
   final VoidCallback onSend;
 
+  const _Composer({required this.controller, required this.onSend});
+
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        border: Border(top: BorderSide(color: cs.outline.withOpacity(0.12))),
-      ),
+    return SafeArea(
+      top: false,
       child: Row(
         children: [
           Expanded(
-            child: TextField(
-              enabled: enabled,
-              controller: controller,
-              minLines: 1,
-              maxLines: 4,
-              decoration: const InputDecoration(
-                hintText: 'Type a message…',
-                border: OutlineInputBorder(),
-                isDense: true,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 12, right: 8, bottom: 8),
+              child: TextField(
+                controller: controller,
+                minLines: 1,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  hintText: 'Message...',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
               ),
             ),
           ),
-          const SizedBox(width: 8),
-          FilledButton.icon(
-            onPressed: enabled ? onSend : null,
-            icon: const Icon(Icons.send_rounded),
-            label: const Text('Send'),
+          Padding(
+            padding: const EdgeInsets.only(right: 8, bottom: 8),
+            child: FilledButton.icon(
+              onPressed: onSend,
+              icon: const Icon(Icons.send),
+              label: const Text('Send'),
+            ),
           ),
         ],
       ),
     );
   }
+}
+
+// === Counter dialog ===========================================================
+
+class _CounterDialog extends StatefulWidget {
+  const _CounterDialog();
+
+  @override
+  State<_CounterDialog> createState() => _CounterDialogState();
+}
+
+class _CounterDialogState extends State<_CounterDialog> {
+  final TextEditingController _amountCtl = TextEditingController();
+  final TextEditingController _noteCtl = TextEditingController();
+  final GlobalKey<FormState> _form = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _amountCtl.dispose();
+    _noteCtl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Counter offer'),
+      content: Form(
+        key: _form,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(
+              controller: _amountCtl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Amount (LKR)',
+                prefixIcon: Icon(Icons.currency_exchange),
+              ),
+              validator: (v) {
+                final x = num.tryParse(v ?? '');
+                if (x == null || x <= 0) return 'Enter a positive number';
+                return null;
+              },
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _noteCtl,
+              decoration: const InputDecoration(
+                labelText: 'Note (optional)',
+                prefixIcon: Icon(Icons.sticky_note_2_outlined),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: () {
+            if (!_form.currentState!.validate()) return;
+            final amt = num.parse(_amountCtl.text);
+            Navigator.pop(context, _CounterData(amount: amt, note: _noteCtl.text.trim().isEmpty ? null : _noteCtl.text.trim()));
+          },
+          child: const Text('Send'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CounterData {
+  final num amount;
+  final String? note;
+  _CounterData({required this.amount, this.note});
 }

@@ -1,4 +1,4 @@
-// lib/main.dart
+// lib/main.dart (patched) — preserves your original home & settings
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
@@ -15,6 +15,9 @@ import 'package:servana/utils/app_settings.dart';
 
 // NEW: register FCM token after sign-in
 import 'package:servana/services/push_service.dart';
+
+// Compat route target (supports both old and new param names)
+import 'package:servana/screens/conversation_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -67,6 +70,23 @@ class MyApp extends StatelessWidget {
               routes: {
                 '/signin': (_) => const LoginScreen(),
                 '/home':   (_) => const PosterHomeShell(),
+
+                // ✅ Compat conversation route — supports both old and new callers
+                '/conversation': (context) {
+                  final args = ModalRoute.of(context)!.settings.arguments as Map?;
+                  return ConversationScreen(
+                    // new-style (if provided)
+                    chatChannelId: args?['chatChannelId'] as String?,
+
+                    // legacy compatibility
+                    otherUserId:   (args?['otherUserId'] ?? args?['helperId']) as String?,
+                    otherUserName: (args?['otherUserName'] ?? args?['helperName']) as String?,
+
+                    // optional task context
+                    taskId:        args?['taskId'] as String?,
+                    taskTitle:     args?['taskTitle'] as String?,
+                  );
+                },
               },
 
               // Auth gate: swap between PosterHomeShell and LoginScreen

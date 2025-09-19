@@ -1,4 +1,3 @@
-
 // lib/widgets/chat/offer_message_card.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,11 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:servana/services/offer_actions.dart';
 
 class OfferMessageCard extends StatefulWidget {
-  final Map<String, dynamic> message; // chats/{cid}/messages doc data
+  final Map message; // chats/{cid}/messages doc data
   const OfferMessageCard({super.key, required this.message});
 
   @override
-  State<OfferMessageCard> createState() => _OfferMessageCardState();
+  State createState() => _OfferMessageCardState();
 }
 
 class _OfferMessageCardState extends State<OfferMessageCard> {
@@ -48,7 +47,13 @@ class _OfferMessageCardState extends State<OfferMessageCard> {
       rows.add(Text('No helper fee on Accept (direct invite path)', style: theme.textTheme.bodySmall));
     }
 
-    final actions = _actions(type: type, status: status, isPoster: isPoster, isHelper: isHelper, offerId: offerId);
+    final actions = _actions(
+      type: type,
+      status: status,
+      isPoster: isPoster,
+      isHelper: isHelper,
+      offerId: offerId,
+    );
 
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -62,9 +67,7 @@ class _OfferMessageCardState extends State<OfferMessageCard> {
             if (actions.isNotEmpty)
               Wrap(
                 spacing: 8, runSpacing: -6,
-                children: actions.map((a) {
-                  return a;
-                }).toList(),
+                children: actions.map((a) => a).toList(),
               ),
             if (_busy) const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -147,11 +150,12 @@ class _OfferMessageCardState extends State<OfferMessageCard> {
   }
 
   Future<void> _counterDialog(String offerId) async {
+    if (!mounted) return;
     final controller = TextEditingController();
     final noteCtrl = TextEditingController();
-    final res = await showDialog<Map<String, String>>(
+    final res = await showDialog<Map<String,String>?>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Counter offer'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -162,76 +166,147 @@ class _OfferMessageCardState extends State<OfferMessageCard> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, {'p': controller.text, 'n': noteCtrl.text}), child: const Text('Send'))
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop({'p': controller.text, 'n': noteCtrl.text}), child: const Text('Send'))
         ],
       ),
     );
-    if (res != null && res['p'] != null && res['p']!.trim().isNotEmpty) {
-      final price = num.tryParse(res['p']!.trim());
-      final note  = res['n']!.trim();
-      if (price != null && price > 0) {
-        setState(() => _busy = true);
-        try {
-          await OfferActions.instance.proposeCounter(offerId: offerId, price: price, note: note.isEmpty ? null : note);
-        } finally { if (mounted) setState(() => _busy = false); }
+    if (!mounted) return;
+    if (res == null) return;
+    final raw = (res['p'] ?? '').trim();
+    if (raw.isEmpty) return;
+    final price = num.tryParse(raw);
+    if (price == null || price <= 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Enter a valid price')));
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      // Prefer taskId from the message, fallback to top-level offer doc
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      if (taskId == null || taskId.isEmpty) {
+        final doc = await FirebaseFirestore.instance.collection('offers').doc(offerId).get();
+        if (doc.exists && doc.data()?['taskId'] != null) {
+          taskId = doc.data()!['taskId'].toString();
+        }
       }
+
+      if (!mounted) return;
+      await OfferActions.instance.proposeCounter(
+        offerId: offerId,
+        price: price,
+        note: (res['n'] ?? '').toString().trim(),
+        taskId: taskId,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Counter sent')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Counter failed: $e')));
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
     }
   }
 
   Future<void> _helperCounterDialog(String offerId) async {
+    if (!mounted) return;
     final controller = TextEditingController();
-    final res = await showDialog<String>(
+    final res = await showDialog<String?>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Your counter price'),
         content: TextField(controller: controller, keyboardType: TextInputType.number),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Send')),
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(controller.text), child: const Text('Send')),
         ],
       ),
     );
-    if (res != null && res.trim().isNotEmpty) {
-      final price = num.tryParse(res.trim());
-      if (price != null && price > 0) {
-        setState(() => _busy = true);
-        try {
-          // Use the same callable as poster? No — helper counter goes via direct field; we add a small callable, but for now reuse proposeCounter is wrong
-          // We expose a helper-side counter by setting helperCounterPrice; add a dedicated callable if needed. Here we just reuse proposeCounter for simplicity.
-          await OfferActions.instance.helperCounter(offerId: offerId, price: price);
-        } finally { if (mounted) setState(() => _busy = false); }
+    if (!mounted) return;
+    if (res == null || res.trim().isEmpty) return;
+    final price = num.tryParse(res.trim());
+    if (price == null || price <= 0) return;
+
+    setState(() => _busy = true);
+    try {
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      if (taskId == null || taskId.isEmpty) {
+        final doc = await FirebaseFirestore.instance.collection('offers').doc(offerId).get();
+        if (doc.exists && doc.data()?['taskId'] != null) {
+          taskId = doc.data()!['taskId'].toString();
+        }
       }
+      if (!mounted) return;
+      await OfferActions.instance.helperCounter(offerId: offerId, price: price, taskId: taskId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Counter sent')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Counter failed: $e')));
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
     }
   }
 
   Future<void> _reject(String offerId) async {
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
-      await OfferActions.instance.rejectOffer(offerId: offerId);
-    } finally { if (mounted) setState(() => _busy = false); }
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      await OfferActions.instance.rejectOffer(offerId: offerId, taskId: taskId);
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
+    }
   }
 
   Future<void> _withdraw(String offerId) async {
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
-      await OfferActions.instance.withdrawOffer(offerId: offerId);
-    } finally { if (mounted) setState(() => _busy = false); }
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      await OfferActions.instance.withdrawOffer(offerId: offerId, taskId: taskId);
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
+    }
   }
 
   Future<void> _agree(String offerId) async {
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
-      await OfferActions.instance.agreeToCounter(offerId: offerId);
-    } finally { if (mounted) setState(() => _busy = false); }
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      await OfferActions.instance.agreeToCounter(offerId: offerId, taskId: taskId);
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
+    }
   }
 
   Future<void> _accept(String offerId) async {
+    if (!mounted) return;
     setState(() => _busy = true);
     try {
-      await OfferActions.instance.acceptOffer(offerId: offerId);
+      String? taskId = (widget.message['taskId'] ?? widget.message['task_id'])?.toString();
+      if (taskId == null || taskId.isEmpty) {
+        final doc = await FirebaseFirestore.instance.collection('offers').doc(offerId).get();
+        final data = doc.data();
+        final foundTaskId = (data != null && data['taskId'] != null) ? data['taskId'].toString() : '';
+        taskId = foundTaskId;
+      }
+      if (!mounted) return;
+      await OfferActions.instance.acceptOffer(offerId: offerId, taskId: taskId);
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Accept failed: $e')));
-    } finally { if (mounted) setState(() => _busy = false); }
+    } finally {
+      if (!mounted) return;
+      setState(() => _busy = false);
+    }
   }
 }
